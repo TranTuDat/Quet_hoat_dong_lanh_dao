@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chi tiết đối tượng</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/isr-theme.css" />
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <nav class="detail-nav">
+    <div class="detail-nav-in">
+      <div class="detail-tabs">
+        <a href="/"><i data-lucide="arrow-left" style="width:14px;height:14px;vertical-align:-2px"></i> Quay lại</a>
+        <a href="#sec-hoatdong">Hoạt động</a>
+        <a href="#sec-biendong">Chức vụ</a>
+      </div>
+      <div class="main-actions">
+        <a class="btn btn-glass btn-sm" id="exportLink" href="#"><i data-lucide="download"></i> Tải JSON</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="detail-wrap">
+    <header class="detail-hero">
+      <div>
+        <h1 id="pageTitle">—</h1>
+        <div class="sub" id="pageSub">Kết quả quét trong … giờ gần nhất</div>
+        <div class="stat-row" id="statRow" style="display:none">
+          <div class="stat hd"><div class="lbl">Hoạt động</div><div class="val" id="statHd">0</div></div>
+          <div class="stat cv"><div class="lbl">Chức vụ</div><div class="val" id="statCv">0</div></div>
+        </div>
+      </div>
+      <span class="detail-spin" id="spin" style="display:none"></span>
+    </header>
+
+    <section class="block" id="sec-verdict" style="display:none">
+      <div class="block-hd"><i data-lucide="check-circle-2"></i><h2>Tóm tắt</h2></div>
+      <div class="block-bd"><div class="verdict neutral" id="verdictLine"></div></div>
+    </section>
+
+    <section class="block" id="sec-hoatdong">
+      <div class="block-hd"><i data-lucide="activity"></i><h2>Hoạt động</h2><span class="cnt" id="cntHd">0 tin</span></div>
+      <div class="block-bd"><div class="feed" id="listHoatDong"></div></div>
+    </section>
+
+    <section class="block" id="sec-biendong">
+      <div class="block-hd"><i data-lucide="git-branch"></i><h2>Thay đổi chức vụ</h2><span class="cnt" id="cntBd">0 tin</span></div>
+      <div class="block-bd"><div class="feed" id="listBienDong"></div></div>
+    </section>
+  </div>
+
+  <script>
+    function escapeHtml(s){
+      return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function qs(n){ return new URL(location.href).searchParams.get(n); }
+    function verdictClass(status){
+      if(status === 'change') return 'verdict warn';
+      if(status === 'stable_activity') return 'verdict ok';
+      return 'verdict neutral';
+    }
+
+    function renderRecord(container, item){
+      const ai = item.ai_result || {};
+      const title = item.title || '(Không có tiêu đề)';
+      const url = item.article_url || item.resolved_url || item.url || '';
+      const press = item.press_name || item.press_domain || '';
+      const isCh = !!ai.Is_Change;
+
+      const kvRows = [];
+      const pf = (ai.Position_Full_Official || '').trim();
+      const tp = (ai.To_Position || '').trim();
+      const fp = (ai.From_Position || '').trim();
+      const cd = (ai.Change_Date || '').trim();
+      if(pf) kvRows.push(['Chức vụ', pf]);
+      else if(tp) kvRows.push(['Chức vụ', tp]);
+      if(fp) kvRows.push(['Trước đây', fp]);
+      if(cd) kvRows.push(['Ngày', cd]);
+      const kv = kvRows.length ? '<dl class="kv">' + kvRows.map(([k,v]) =>
+        `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('') + '</dl>' : '';
+      const bullets = Array.isArray(ai.Activity_Bullets) && ai.Activity_Bullets.length
+        ? '<ul class="bullets">' + ai.Activity_Bullets.map(b => `<li>${escapeHtml(b)}</li>`).join('') + '</ul>' : '';
+
+      const el = document.createElement('article');
+      el.className = 'record' + (isCh ? ' change' : '');
+      el.innerHTML = `
+        ${press ? `<span class="press">${escapeHtml(press)}</span>` : ''}
+        <h3><a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(title)}</a></h3>
+        ${item.timestamp ? `<div class="meta">${escapeHtml(item.timestamp)}</div>` : ''}
+        ${kv}${bullets}
+        <div class="record-actions">
+          <a class="btn btn-glass btn-sm" href="${escapeHtml(url)}" target="_blank" rel="noopener">
+            <i data-lucide="external-link"></i> Mở bài báo
+          </a>
+        </div>`;
+      container.appendChild(el);
+    }
+
+    async function load(){
+      const name = (qs('name') || '').trim();
+      let hours = 24;
+      const h = qs('hours');
+      if(h){ const v = Number(String(h).replace(',','.')); if(v>0) hours = v; }
+
+      const spin = document.getElementById('spin');
+      spin.style.display = 'block';
+      if(!name){
+        document.getElementById('pageSub').textContent = 'Thiếu tên đối tượng';
+        spin.style.display = 'none';
+        return;
+      }
+
+      document.getElementById('pageTitle').textContent = name;
+      document.getElementById('pageSub').textContent = 'Thời gian ' + hours + ' giờ';
+      document.getElementById('exportLink').href =
+        '/api/target/export.json?name=' + encodeURIComponent(name) + '&hours=' + encodeURIComponent(String(hours));
+
+      try{
+        const res = await fetch('/api/target/detail?name=' + encodeURIComponent(name) + '&hours=' + encodeURIComponent(String(hours)));
+        const data = await res.json();
+        if(!data.success){
+          document.getElementById('pageSub').textContent = data.error || 'Lỗi';
+          return;
+        }
+
+        const sum = data.summary || {};
+        const vLine = document.getElementById('verdictLine');
+        vLine.className = verdictClass(sum.status);
+        vLine.textContent = sum.headline || sum.digest_short || '—';
+        document.getElementById('sec-verdict').style.display = 'block';
+
+        const hd = data.records_hoatdong || [];
+        const bd = data.records_biendong || [];
+        document.getElementById('statRow').style.display = 'flex';
+        document.getElementById('statHd').textContent = hd.length;
+        document.getElementById('statCv').textContent = bd.length;
+        document.getElementById('cntHd').textContent = hd.length + ' tin';
+        document.getElementById('cntBd').textContent = bd.length + ' tin';
+
+        const hEl = document.getElementById('listHoatDong');
+        const bEl = document.getElementById('listBienDong');
+        hEl.innerHTML = hd.length ? '' : '<div class="empty">Chưa có tin</div>';
+        bEl.innerHTML = bd.length ? '' : '<div class="empty">Chưa có tin</div>';
+        hd.forEach(it => renderRecord(hEl, it));
+        bd.forEach(it => renderRecord(bEl, it));
+        if (window.lucide) lucide.createIcons();
+      }catch(e){
+        document.getElementById('pageSub').textContent = String(e?.message || e);
+      }finally{
+        spin.style.display = 'none';
+      }
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide) lucide.createIcons();
+      load();
+    });
+  </script>
+</body>
+</html>

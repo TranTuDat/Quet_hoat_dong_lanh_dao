@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Giám sát tin tức</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/isr-theme.css" />
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="logo-row">
+          <div class="logo-mark"><i data-lucide="radar"></i></div>
+          <div>
+            <h1>Hệ thống giám sát</h1>
+            <div class="sub">Thay đổi chức vụ và hoạt động của lãnh đạo</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <button type="button" class="btn btn-glass sidebar-settings-btn" id="btnOpenSettings">
+          <i data-lucide="settings"></i> Cài đặt hệ thống
+        </button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sec-label"><i data-lucide="clock"></i> Thời gian tìm kiếm</div>
+        <div class="time-row">
+          <input class="inp-glass" type="text" id="hoursRangeInput" inputmode="decimal" value="24" aria-label="Giờ" />
+          <span class="unit-tag">GIỜ</span>
+          <button type="button" class="btn btn-glass btn-icon" id="btnApplyHours" title="Áp dụng">
+            <i data-lucide="check"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="sidebar-scroll">
+        <div class="sec-label" style="margin-bottom:10px"><i data-lucide="users"></i> Đối tượng</div>
+        <div class="target-form-hint" id="editHint">
+          <i data-lucide="pencil"></i>
+          <span id="editHintText">Đang sửa…</span>
+        </div>
+        <div class="add-row">
+          <input class="inp-text" type="text" id="targetName" placeholder="Họ tên" aria-label="Họ tên" />
+          <input class="inp-text" type="text" id="targetPos" placeholder="Chức vụ" aria-label="Chức vụ" />
+          <div class="target-form-actions" id="targetFormActions">
+            <button type="button" class="btn btn-glass" id="btnAddTarget" style="grid-column:1/-1">
+              <i data-lucide="plus" id="btnTargetIcon"></i>
+              <span id="btnTargetLabel">Thêm</span>
+            </button>
+            <button type="button" class="btn btn-glass" id="btnCancelEdit" style="display:none">
+              <i data-lucide="x"></i> Hủy
+            </button>
+          </div>
+        </div>
+        <div class="targets" id="targetsList"></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="main-top">
+        <div>
+          <h2>Kết quả lần quét gần nhất</h2>
+        </div>
+        <div class="main-actions">
+          <span class="status-pill" id="statusLine">—</span>
+          <button type="button" class="btn btn-glass btn-icon" id="btnRefresh" title="Tải lại">
+            <i data-lucide="refresh-cw"></i>
+          </button>
+          <button type="button" class="btn btn-primary" id="btnRunNow" title="Quét tin">
+            <span class="spinner" id="runSpinner"></span>
+            <i data-lucide="play"></i> Quét
+          </button>
+        </div>
+      </header>
+      <div class="main-content">
+        <div class="feed" id="summariesList"></div>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="settingsModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="settingsTitle">
+      <div class="modal-hd">
+        <h2 id="settingsTitle">Cài đặt hệ thống</h2>
+        <button type="button" class="btn btn-glass btn-icon" id="btnCloseSettings" title="Đóng">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-bd">
+        <div class="settings-group">
+          <h3>Lọc khi quét</h3>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Chỉ báo chính thống</strong>
+              <span>Chỉ giữ tin từ danh sách báo bên dưới (file Chinh_thong.json)</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setFilterChinhThong" />
+              <span class="track"></span>
+            </label>
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Gộp tin trùng</strong>
+              <span>Nhóm các bài cùng sự kiện (cần bật module phân cụm)</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setMergeDup" />
+              <span class="track"></span>
+            </label>
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Phân cụm sự kiện (AI)</strong>
+              <span>Tải model nặng, quét chậm hơn</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setEventIntel" />
+              <span class="track"></span>
+            </label>
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Số tin tối đa / đối tượng</strong>
+              <span>Mỗi lần quét Google News</span>
+            </div>
+            <input class="inp-num" type="number" id="setMaxResults" min="1" max="50" value="15" />
+          </label>
+        </div>
+        <div class="settings-group">
+          <h3>Thông báo Telegram</h3>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Bật gửi Telegram</strong>
+              <span>Gửi tin khi quét thấy bài mới (sau khi AI xác nhận)</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setTelegramEnabled" />
+              <span class="track"></span>
+            </label>
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Chỉ thông báo thay đổi chức vụ</strong>
+              <span>Tắt = gửi mọi tin hoạt động đã lưu</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setTelegramRoleOnly" />
+              <span class="track"></span>
+            </label>
+          </label>
+          <div class="press-add" style="grid-template-columns:1fr">
+            <input class="inp-text" type="password" id="setTelegramToken" placeholder="Bot token (từ @BotFather)" autocomplete="off" />
+            <input class="inp-text" type="text" id="setTelegramChatId" placeholder="Chat ID người/nhóm nhận (không phải ID bot)" />
+            <button type="button" class="btn btn-glass btn-sm" id="btnTelegramTest">
+              <i data-lucide="send"></i> Gửi thử
+            </button>
+          </div>
+        </div>
+        <div class="settings-group">
+          <h3>Danh sách báo chính thống</h3>
+          <div class="press-list" id="pressList"></div>
+          <div class="press-add">
+            <input class="inp-text" type="text" id="pressName" placeholder="Tên báo" />
+            <input class="inp-text" type="text" id="pressUrl" placeholder="https://vnexpress.net/" />
+            <button type="button" class="btn btn-glass btn-sm" id="btnAddPress">
+              <i data-lucide="plus"></i> Thêm báo
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-ft">
+        <button type="button" class="btn btn-glass" id="btnCancelSettings">Hủy</button>
+        <button type="button" class="btn btn-primary" id="btnSaveSettings">
+          <i data-lucide="save"></i> Lưu cài đặt
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/dashboard.js?v=6"></script>
+  <script src="/static/js/settings.js?v=2"></script>
+</body>
+</html>

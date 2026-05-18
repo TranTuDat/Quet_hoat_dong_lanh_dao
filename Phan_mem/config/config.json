@@ -1,0 +1,25 @@
+{
+  "gemini_api_key": "AIzaSyCPv97NE2tUKvmGskrjfY0lKkh8Jl7C5Y8",
+  "gemini_model": "gemini-2.5-flash",
+  "scan_interval_minutes": 60,
+  "google_news": {
+    "language": "vi",
+    "country": "VN",
+    "max_results_per_target": 35,
+    "filter_chinh_thong_only": true,
+    "activity_report_hours": 24,
+    "role_change_report_hours": 168,
+    "merge_duplicate_articles": false,
+    "use_event_intelligence": false
+  },
+  "targets": [
+    {
+      "name": "Tô Lâm",
+      "position": "Tổng bí thư"
+    },
+    {
+      "name": "Lê Minh Hưng",
+      "position": "Thủ tướng Chính phủ"
+    }
+  ]
+}

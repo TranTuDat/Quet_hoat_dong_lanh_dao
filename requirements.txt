@@ -1,0 +1,4 @@
+Flask
+GNews
+google-generativeai
+googlenewsdecoder
