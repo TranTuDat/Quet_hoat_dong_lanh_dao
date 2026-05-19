@@ -377,6 +377,17 @@ def call_gemini_for_change(gemini_api_key: str, target: Target, article: Dict[st
                     "Gemini_Tries": tried,
                     "Should_Retry": True,
                 }
+            if "403" in msg or "leaked" in msg or "permission" in msg:
+                return {
+                    "Is_Activity": False,
+                    "Is_Change": False,
+                    "Matched_Target": False,
+                    "Summary": "Gemini API key không hợp lệ hoặc đã bị vô hiệu.",
+                    "Confidence": 0,
+                    "Gemini_Error": str(e),
+                    "Gemini_Tries": tried,
+                    "Should_Retry": False,
+                }
             continue
 
     if resp is None:
@@ -548,13 +559,14 @@ def _process_gemini_batch(
     pending: List[Tuple[Dict[str, Any], str]],
     *,
     gemini_workers: int,
-) -> List[Tuple[Dict[str, Any], str, Dict[str, Any]]]:
-    """Gọi Gemini song song; trả (art, news_kind, ai_result)."""
+) -> Tuple[List[Tuple[Dict[str, Any], str, Dict[str, Any]]], List[str]]:
+    """Gọi Gemini song song; trả (kết quả, danh sách lỗi)."""
     if not pending:
-        return []
+        return [], []
 
     w = max(1, min(int(gemini_workers), 6))
     out: List[Tuple[Dict[str, Any], str, Dict[str, Any]]] = []
+    errors: List[str] = []
 
     def _one(item: Tuple[Dict[str, Any], str]) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
         art, kind = item
@@ -563,8 +575,13 @@ def _process_gemini_batch(
 
     if w <= 1 or len(pending) == 1:
         for item in pending:
-            out.append(_one(item))
-        return out
+            try:
+                out.append(_one(item))
+            except Exception as exc:
+                msg = str(exc)
+                print(f"  [AI] worker error: {msg}")
+                errors.append(msg)
+        return out, errors
 
     with ThreadPoolExecutor(max_workers=w) as pool:
         futures = [pool.submit(_one, item) for item in pending]
@@ -572,8 +589,10 @@ def _process_gemini_batch(
             try:
                 out.append(fut.result())
             except Exception as exc:
-                print(f"  [AI] worker error: {exc}")
-    return out
+                msg = str(exc)
+                print(f"  [AI] worker error: {msg}")
+                errors.append(msg)
+    return out, errors
 
 
 def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[str] = None) -> Dict[str, Any]:
@@ -615,6 +634,7 @@ def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[st
     new_records: List[Dict[str, Any]] = []
     skipped_history_dup = 0
     skipped_pre_decode = 0
+    ai_errors: List[str] = []
 
     for target in targets:
         raw_pairs = _collect_articles_for_target(
@@ -646,12 +666,13 @@ def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[st
             url = str(art.get("url") or "").strip()
             print(f"  [ARTICLE] {target.name} [{news_kind}] {url[:72]}...")
 
-        analyzed = _process_gemini_batch(
+        analyzed, batch_errors = _process_gemini_batch(
             gemini_key,
             target,
             pairs,
             gemini_workers=perf["gemini_workers"],
         )
+        ai_errors.extend(batch_errors)
 
         for art, news_kind, ai_result in analyzed:
             url = str(art.get("url") or "").strip()
@@ -719,6 +740,9 @@ def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[st
     elif tg_result.get("sent", 0):
         print(f"  [TELEGRAM] đã gửi {tg_result.get('sent')} tin")
 
+    if ai_errors:
+        print(f"  [AI] tổng {len(ai_errors)} lỗi trong lượt quét này")
+
     return {
         "success": True,
         "processed_new": saved_count,
@@ -730,6 +754,8 @@ def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[st
         "timestamp": now_iso,
         "scanned_target": filter_name or None,
         "scanned_targets": [t.name for t in targets],
+        "ai_errors": ai_errors,
+        "ai_error_count": len(ai_errors),
         "telegram_enabled": tg_enabled,
         "telegram_sent": tg_result.get("sent", 0),
         "telegram_skipped_dup": tg_result.get("skipped_dup", 0),

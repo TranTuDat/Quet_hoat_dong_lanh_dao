@@ -142,6 +142,9 @@
     if (!res.ok || !data.success) throw new Error(data.error || "Lỗi lưu");
 
     closeModal();
+    if (typeof window.applySettingsSaved === "function") {
+      await window.applySettingsSaved();
+    }
     if (typeof window.flashStatus === "function") {
       window.flashStatus("Đã lưu cài đặt hệ thống", true);
     }

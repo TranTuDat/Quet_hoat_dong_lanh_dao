@@ -27,6 +27,8 @@ class AutoScanner:
             "last_scan_source": None,
             "last_scan_ok": None,
             "last_error": None,
+            "last_warning": None,
+            "last_ai_error_count": 0,
             "last_processed_new": 0,
             "next_scan_at": None,
             "scan_count": 0,
@@ -38,7 +40,10 @@ class AutoScanner:
         return st
 
     def wake_reconfig(self) -> None:
-        """Đánh thức vòng lặp sau khi đổi cài đặt — áp dụng chu kỳ mới sớm hơn."""
+        """Đánh thức vòng lặp và đồng bộ cài đặt mới lên trạng thái hiển thị."""
+        enabled, interval, _ = self._read_schedule()
+        self._state["enabled"] = enabled
+        self._state["interval_minutes"] = interval
         self._config_wake.set()
 
     def start(self) -> None:
@@ -144,24 +149,47 @@ class AutoScanner:
             result = process_once(scan_hours=hours, target_name=target_name)
             now = datetime.now().isoformat(timespec="seconds")
 
+            ai_errs = [str(e) for e in (result.get("ai_errors") or []) if e]
+            ai_count = int(result.get("ai_error_count") or len(ai_errs))
+            warning = None
+            scan_ok = True
+            if ai_errs:
+                warning = ai_errs[0]
+                if len(ai_errs) > 1:
+                    warning += f" (+{len(ai_errs) - 1} lỗi AI khác)"
+                low = warning.lower()
+                if "leaked" in low or "403" in low or "api key" in low:
+                    scan_ok = False
+                    warning = (
+                        "Gemini API key không hợp lệ hoặc đã bị Google vô hiệu hóa. "
+                        "Tạo key mới tại Google AI Studio và cập nhật config.json."
+                    )
+
             self._state["is_scanning"] = False
             self._state["last_scan_at"] = result.get("timestamp") or now
-            self._state["last_scan_ok"] = True
-            self._state["last_error"] = None
+            self._state["last_scan_ok"] = scan_ok
+            self._state["last_error"] = warning if not scan_ok else None
+            self._state["last_warning"] = warning if scan_ok and warning else None
+            self._state["last_ai_error_count"] = ai_count
             self._state["last_processed_new"] = int(result.get("processed_new") or 0)
             self._state["scan_count"] = int(self._state.get("scan_count") or 0) + 1
 
             tg = result.get("telegram_sent", 0)
             tg_skip = result.get("telegram_skipped_already_notified", 0)
+            suffix = f", ai_errors={ai_count}" if ai_count else ""
             print(
                 f"  [AUTO] done — +{result.get('processed_new', 0)} new, "
-                f"telegram={tg}, tg_skip_old={tg_skip}"
+                f"telegram={tg}, tg_skip_old={tg_skip}{suffix}"
             )
+            if warning:
+                print(f"  [AUTO] warning: {warning}")
             return result
         except Exception as exc:
             self._state["is_scanning"] = False
             self._state["last_scan_ok"] = False
             self._state["last_error"] = str(exc)
+            self._state["last_warning"] = None
+            self._state["last_ai_error_count"] = 0
             self._state["last_scan_at"] = datetime.now().isoformat(timespec="seconds")
             print(f"  [AUTO] error: {exc}")
             if source != "auto":

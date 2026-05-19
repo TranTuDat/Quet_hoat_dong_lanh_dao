@@ -1,14 +1,14 @@
 {
-  "gemini_api_key": "AIzaSyCZLABT-riGRn29vJz-Q9ij_b-6AVT3Dos",
+  "gemini_api_key": "AIzaSyCgBkcjL_8oi-ldjbnop6Dit1GWzCLEFJ4",
   "gemini_model": "gemini-2.5-flash",
   "auto_scan_enabled": true,
-  "scan_interval_minutes": 60,
+  "scan_interval_minutes": 5,
   "ui_refresh_seconds": 30,
   "google_news": {
     "language": "vi",
     "country": "VN",
     "max_results_per_target": 15,
-    "filter_chinh_thong_only": true,
+    "filter_chinh_thong_only": false,
     "use_rss_feeds": true,
     "rss_max_per_feed": 40,
     "decode_workers": 4,
@@ -42,9 +42,9 @@
     }
   ],
   "telegram": {
-    "enabled": true,
-    "bot_token": "8655593412:AAFC7jml9E4RyBPezs6gTW46zLV3jcRlw_8",
-    "chat_id": "-5141899884",
+    "enabled": false,
+    "bot_token": "",
+    "chat_id": "",
     "notify_role_change_only": false
   }
 }

@@ -1,0 +1,11 @@
+# Không đẩy key API / token lên Git
+config/config.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Dữ liệu runtime (tùy chọn — bỏ comment nếu không muốn commit data)
+# data/

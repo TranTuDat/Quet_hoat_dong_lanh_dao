@@ -341,7 +341,12 @@ function renderSystemPanel(st, settings) {
   if (!el) return;
   const tgOn = !!settings?.enabled;
   const scanning = !!st?.is_scanning;
-  const autoOn = st?.enabled !== false;
+  const autoOn =
+    settings?.auto_scan_enabled !== undefined
+      ? !!settings.auto_scan_enabled
+      : st?.enabled !== false;
+  const intervalMin =
+    settings?.scan_interval_minutes ?? st?.interval_minutes ?? "—";
 
   let scanVal = "—";
   if (st?.last_scan_at) {
@@ -349,15 +354,23 @@ function renderSystemPanel(st, settings) {
     if (st.last_processed_new > 0) scanVal += ` (+${st.last_processed_new} tin)`;
   }
 
+  const errMsg = st?.last_scan_ok === false && st?.last_error ? st.last_error : "";
+  const warnMsg =
+    st?.last_warning ||
+    (st?.last_ai_error_count > 0 && st?.last_scan_ok !== false
+      ? `AI lỗi ${st.last_ai_error_count} bài (xem terminal)`
+      : "");
+
   el.innerHTML =
     renderKpiRow(window.__LAST_SUMMARIES__ || []) +
     `
     <div class="sys-row"><span class="lbl">Quét tự động</span><span class="val ${autoOn ? "ok" : ""}">${autoOn ? "Bật" : "Tắt"}</span></div>
-    <div class="sys-row"><span class="lbl">Chu kỳ</span><span class="val">${st?.interval_minutes ?? settings?.scan_interval_minutes ?? "—"} phút</span></div>
-    <div class="sys-row"><span class="lbl">Trạng thái</span><span class="val ${scanning ? "busy" : "ok"}">${scanning ? "Đang quét" : "Chờ"}</span></div>
-    <div class="sys-row"><span class="lbl">Lần quét cuối</span><span class="val">${escapeHtml(scanVal)}</span></div>
-    ${st?.last_scan_ok === false && st?.last_error ? `<div class="sys-row"><span class="lbl">Lỗi gần nhất</span><span class="val warn">${escapeHtml(st.last_error)}</span></div>` : ""}
-    ${st?.thread_alive === false && autoOn ? `<div class="sys-row"><span class="lbl">Thread nền</span><span class="val warn">Đã dừng — đang thử khởi động lại</span></div>` : ""}
+    <div class="sys-row"><span class="lbl">Chu kỳ</span><span class="val">${intervalMin} phút</span></div>
+    <div class="sys-row"><span class="lbl">Trạng thái</span><span class="val ${scanning ? "busy" : st?.last_scan_ok === false ? "warn" : "ok"}">${scanning ? "Đang quét" : st?.last_scan_ok === false ? "Lỗi" : "Chờ"}</span></div>
+    <div class="sys-row"><span class="lbl">Lần quét cuối</span><span class="val">${escapeHtml(scanVal)}${st?.last_scan_source ? ` · ${escapeHtml(st.last_scan_source === "auto" ? "tự động" : "thủ công")}` : ""}</span></div>
+    ${errMsg ? `<div class="sys-row"><span class="lbl">Lỗi</span><span class="val warn">${escapeHtml(errMsg)}</span></div>` : ""}
+    ${warnMsg && !errMsg ? `<div class="sys-row"><span class="lbl">Cảnh báo</span><span class="val warn">${escapeHtml(warnMsg)}</span></div>` : ""}
+    ${st?.thread_alive === false && autoOn ? `<div class="sys-row"><span class="lbl">Thread nền</span><span class="val warn">Đã dừng — hệ thống đang thử khởi động lại</span></div>` : ""}
     <div class="sys-row"><span class="lbl">Telegram</span><span class="val ${tgOn ? "ok" : ""}">${tgOn ? "Bật" : "Tắt"}</span></div>
   `;
 }
@@ -450,6 +463,13 @@ function formatScanResultMessage(data, targetName) {
       msg += ` · không có tin mới (URL đã quét trước — Telegram chỉ gửi khi có tin mới)`;
     } else if (data.telegram_skipped_dup > 0) {
       msg += ` · Telegram: tin đã gửi trước đó`;
+    }
+  }
+  if (data.ai_error_count > 0) {
+    msg += ` · AI lỗi ${data.ai_error_count} bài`;
+    const first = (data.ai_errors || [])[0] || "";
+    if (/leaked|403|api key/i.test(first)) {
+      msg += " — cần đổi Gemini API key trong config.json";
     }
   }
   return msg;
@@ -551,6 +571,30 @@ function startLiveRefresh(seconds) {
   }, sec * 1000);
   pollMonitorStatus();
 }
+
+async function applySettingsSaved() {
+  try {
+    const [settingsRes, statusRes] = await Promise.all([
+      fetch("/api/settings"),
+      fetch("/api/monitor/status"),
+    ]);
+    const settingsData = await settingsRes.json();
+    const statusData = await statusRes.json();
+    if (settingsData.success !== false) {
+      window.__LAST_SETTINGS__ = settingsData.settings || {};
+    }
+    if (statusData.success !== false) {
+      renderSystemPanel(statusData.status || {}, window.__LAST_SETTINGS__ || {});
+    }
+    const sec = window.__LAST_SETTINGS__?.ui_refresh_seconds ?? 30;
+    startLiveRefresh(sec);
+    if (window.lucide) lucide.createIcons();
+  } catch {
+    /* bỏ qua */
+  }
+}
+
+window.applySettingsSaved = applySettingsSaved;
 
 function initDashboard() {
   const btnRunNow = document.getElementById("btnRunNow");
