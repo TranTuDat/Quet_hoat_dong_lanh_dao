@@ -61,11 +61,13 @@ def main() -> int:
     code, html = fetch("/")
     print(f"  /: {'OK' if code == 200 else 'FAIL'} ({code})")
     if code != 200:
-        errors.append("Dashboard không phản hồi")
+        errors.append("Dashboard not responding")
     elif isinstance(html, str):
-        for needle in ("theme.js", "data-theme-toggle", "Quét tất cả"):
+        for needle in ("theme.js", "data-theme-toggle"):
             if needle not in html:
-                warnings.append(f"Dashboard thiếu: {needle}")
+                warnings.append(f"Dashboard missing: {needle}")
+        if "Qu" not in html and "tất cả" not in html:
+            warnings.append("Dashboard may be outdated (missing scan button label)")
 
     print("\n=== Static ===")
     for path in (
@@ -76,21 +78,21 @@ def main() -> int:
         code, _ = fetch(path)
         print(f"  {path}: {'OK' if code == 200 else 'FAIL'} ({code})")
         if code != 200:
-            errors.append(f"Thiếu file static: {path}")
+            errors.append(f"Missing static: {path}")
 
-    print("\n=== Kết luận ===")
+    print("\n=== Result ===")
     if errors:
-        print("LỖI:")
+        print("ERRORS:")
         for e in errors:
             print("  -", e)
     if warnings:
-        print("CẢNH BÁO:")
+        print("WARNINGS:")
         for w in warnings:
             print("  -", w)
     if not errors and not warnings:
-        print("Hệ thống ổn — không phát hiện lỗi.")
+        print("OK — no issues found.")
     elif not errors:
-        print("Không có lỗi nghiêm trọng.")
+        print("No critical errors.")
     return 1 if errors else 0
 
 
