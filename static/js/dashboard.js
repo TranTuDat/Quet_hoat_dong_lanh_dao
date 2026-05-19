@@ -356,6 +356,8 @@ function renderSystemPanel(st, settings) {
     <div class="sys-row"><span class="lbl">Chu kỳ</span><span class="val">${st?.interval_minutes ?? settings?.scan_interval_minutes ?? "—"} phút</span></div>
     <div class="sys-row"><span class="lbl">Trạng thái</span><span class="val ${scanning ? "busy" : "ok"}">${scanning ? "Đang quét" : "Chờ"}</span></div>
     <div class="sys-row"><span class="lbl">Lần quét cuối</span><span class="val">${escapeHtml(scanVal)}</span></div>
+    ${st?.last_scan_ok === false && st?.last_error ? `<div class="sys-row"><span class="lbl">Lỗi gần nhất</span><span class="val warn">${escapeHtml(st.last_error)}</span></div>` : ""}
+    ${st?.thread_alive === false && autoOn ? `<div class="sys-row"><span class="lbl">Thread nền</span><span class="val warn">Đã dừng — đang thử khởi động lại</span></div>` : ""}
     <div class="sys-row"><span class="lbl">Telegram</span><span class="val ${tgOn ? "ok" : ""}">${tgOn ? "Bật" : "Tắt"}</span></div>
   `;
 }

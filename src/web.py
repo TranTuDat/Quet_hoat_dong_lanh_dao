@@ -430,6 +430,7 @@ def api_telegram_test():
 
 @app.get("/api/monitor/status")
 def api_monitor_status():
+    _AUTO_SCANNER.ensure_running()
     st = _AUTO_SCANNER.get_status()
     return jsonify({"success": True, "status": st})
 

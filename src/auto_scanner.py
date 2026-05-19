@@ -50,6 +50,16 @@ class AutoScanner:
         print("[AUTO] Background scanner started")
         self._thread.start()
 
+    def ensure_running(self) -> None:
+        """Khởi động lại thread quét nền nếu đã chết (crash, lỗi encoding cũ…)."""
+        if self._stop.is_set():
+            return
+        if self._thread and self._thread.is_alive():
+            return
+        print("[AUTO] Thread nền không còn — khởi động lại")
+        self._started = False
+        self.start()
+
     def stop(self) -> None:
         self._stop.set()
         self._config_wake.set()
@@ -176,6 +186,11 @@ class AutoScanner:
             target_name=target_name,
         )
         if out is None:
+            if self._state.get("is_scanning"):
+                raise RuntimeError("Không thể quét — đang có lượt quét khác")
+            err = self._state.get("last_error")
+            if err:
+                raise RuntimeError(str(err))
             raise RuntimeError("Không thể quét — đang bận")
         return out
 
