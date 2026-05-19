@@ -123,6 +123,20 @@ function statusLabel(status) {
   return "—";
 }
 
+function formatDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(String(iso).replace(" ", "T"));
+  if (Number.isNaN(d.getTime())) return String(iso || "—");
+  return d.toLocaleString("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function formatTimeline(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -223,9 +237,6 @@ function renderSummaries(summaries) {
     const nHd = s.activity_count ?? 0;
     const nCv = s.change_count ?? 0;
     const snippet = (s.headline || s.digest_short || "").trim().split("\n")[0];
-    const timeLbl = formatTimeline(s.latest_timestamp);
-    const isNew = !!s.is_new;
-
     const card = document.createElement("article");
     card.className = "activity-card";
     card.dataset.status = s.status || "";
@@ -235,7 +246,6 @@ function renderSummaries(summaries) {
         <div class="card-top">
           <div class="card-title-area">
             <h3>${escapeHtml(name)}</h3>
-            ${isNew ? '<span class="badge-new">Mới</span>' : ""}
           </div>
           <span class="${statusChipClass(s.status)}">${escapeHtml(statusLabel(s.status))}</span>
         </div>
@@ -244,7 +254,6 @@ function renderSummaries(summaries) {
           <span class="metric-pill cv">Chức vụ <b>${nCv}</b></span>
         </div>
         ${snippet ? `<p class="card-snippet">${escapeHtml(snippet)}</p>` : ""}
-        ${timeLbl ? `<div class="card-meta"><span><i data-lucide="clock"></i> ${escapeHtml(timeLbl)}</span></div>` : ""}
         <div class="card-actions">
           <a class="btn btn-glass btn-sm" href="${escapeHtml(href)}">
             <i data-lucide="arrow-right"></i> Chi tiết
@@ -262,24 +271,211 @@ function renderSummaries(summaries) {
   if (window.lucide) lucide.createIcons();
 }
 
+function parseRecordTime(iso) {
+  if (!iso) return 0;
+  const d = new Date(String(iso).replace(" ", "T"));
+  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
+function articleUrl(row) {
+  const resolved = String(row?.resolved_url || "").trim();
+  const url = String(row?.url || "").trim();
+  return resolved.startsWith("http") ? resolved : url;
+}
+
+function buildRecentFeed(notifs, hours, limit = 10) {
+  const cutoff = Date.now() - hours * 3600000;
+  const seen = new Set();
+  const rows = [];
+  for (const ch of ["channel_hoatdong", "channel_biendong"]) {
+    for (const r of notifs?.[ch] || []) {
+      if (!r || typeof r !== "object") continue;
+      const ts = parseRecordTime(r.timestamp);
+      if (ts && ts < cutoff) continue;
+      const key = `${r.target_name || ""}|${articleUrl(r)}`;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ ...r, _ts: ts || 0, _channel: ch });
+    }
+  }
+  rows.sort((a, b) => b._ts - a._ts);
+  return rows.slice(0, limit);
+}
+
+function renderKpiRow(summaries) {
+  const list = summaries || [];
+  let nChange = 0;
+  let nAct = 0;
+  for (const s of list) {
+    if (s.status === "change") nChange += 1;
+    if ((s.activity_count || 0) > 0) nAct += 1;
+  }
+  return `
+    <div class="side-kpi-row side-kpi-row-3">
+      <div class="side-kpi"><b>${list.length}</b><span>Đối tượng</span></div>
+      <div class="side-kpi"><b>${nChange}</b><span>Biến động</span></div>
+      <div class="side-kpi"><b>${nAct}</b><span>Có hoạt động</span></div>
+    </div>`;
+}
+
+function renderSystemPanel(st, settings) {
+  const el = document.getElementById("systemPanelBody");
+  if (!el) return;
+  const tgOn = !!settings?.enabled;
+  const scanning = !!st?.is_scanning;
+  const autoOn = st?.enabled !== false;
+
+  let scanVal = "—";
+  if (st?.last_scan_at) {
+    scanVal = formatDateTime(st.last_scan_at);
+    if (st.last_processed_new > 0) scanVal += ` (+${st.last_processed_new} tin)`;
+  }
+
+  let nextVal = "—";
+  if (st?.next_scan_at && !scanning) {
+    const n = new Date(String(st.next_scan_at).replace(" ", "T"));
+    if (!Number.isNaN(n.getTime())) {
+      const mins = Math.max(0, Math.round((n.getTime() - Date.now()) / 60000));
+      nextVal = `~${mins} phút`;
+    }
+  }
+  if (scanning) nextVal = "Đang quét…";
+
+  el.innerHTML =
+    renderKpiRow(window.__LAST_SUMMARIES__ || []) +
+    `
+    <div class="sys-row"><span class="lbl">Quét tự động</span><span class="val ${autoOn ? "ok" : ""}">${autoOn ? "Bật" : "Tắt"}</span></div>
+    <div class="sys-row"><span class="lbl">Chu kỳ</span><span class="val">${st?.interval_minutes ?? settings?.scan_interval_minutes ?? "—"} phút</span></div>
+    <div class="sys-row"><span class="lbl">Trạng thái</span><span class="val ${scanning ? "busy" : "ok"}">${scanning ? "Đang quét" : "Chờ"}</span></div>
+    <div class="sys-row"><span class="lbl">Lần quét cuối</span><span class="val">${escapeHtml(scanVal)}</span></div>
+    <div class="sys-row"><span class="lbl">Lần quét tiếp</span><span class="val">${escapeHtml(nextVal)}</span></div>
+    <div class="sys-row"><span class="lbl">Telegram</span><span class="val ${tgOn ? "ok" : ""}">${tgOn ? "Bật" : "Tắt"}</span></div>
+  `;
+}
+
+function renderRecentFeed(notifs, hours) {
+  const el = document.getElementById("recentFeedBody");
+  if (!el) return;
+  const rows = buildRecentFeed(notifs, hours, 10);
+  if (!rows.length) {
+    el.innerHTML = '<p class="side-empty">Chưa có tin trong cửa sổ thời gian.</p>';
+    return;
+  }
+  el.innerHTML = rows
+    .map((r) => {
+      const name = r.target_name || "";
+      const title = String(r.title || "").trim() || "(Không có tiêu đề)";
+      const link = articleUrl(r);
+      const ai = r.ai_result && typeof r.ai_result === "object" ? r.ai_result : {};
+      const summary = String(ai.Summary || "").trim();
+      const press = r.press_name || "";
+      const when = formatTimeline(r.timestamp) || "";
+      const kind =
+        r._channel === "channel_biendong" ? "Chức vụ" : "Hoạt động";
+      return `
+        <article class="feed-item">
+          <div class="fi-top">
+            <span class="fi-target">${escapeHtml(name)}</span>
+            <span class="fi-time">${escapeHtml(when)}${when ? " · " : ""}${escapeHtml(kind)}</span>
+          </div>
+          <div class="fi-title">${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>` : escapeHtml(title)}</div>
+          <div class="fi-meta">${escapeHtml(summary || press || "")}</div>
+        </article>`;
+    })
+    .join("");
+}
+
 async function loadAll() {
   flashStatus("Đang tải…", false);
   const hours = parseHoursRange();
-  const [cfgRes, sumRes] = await Promise.all([
+  const [cfgRes, sumRes, notifRes, settingsRes, statusRes] = await Promise.all([
     fetch("/config"),
     fetch("/api/targets/summary?hours=" + encodeURIComponent(String(hours))),
+    fetch("/notifications"),
+    fetch("/api/settings"),
+    fetch("/api/monitor/status"),
   ]);
   const cfg = await cfgRes.json();
   const sumData = await sumRes.json();
+  const notifData = await notifRes.json();
+  const settingsData = await settingsRes.json();
+  const statusData = await statusRes.json();
   if (cfg.success === false) throw new Error(cfg.error || "Lỗi tải cấu hình");
   if (sumData.success === false) throw new Error(sumData.error || "Lỗi tải tín hiệu");
   window.__CFG_TARGETS__ = cfg.config.targets || [];
+  window.__LAST_SUMMARIES__ = sumData.summaries || [];
   renderTargets(cfg.config);
-  renderSummaries(sumData.summaries || []);
+  renderSummaries(window.__LAST_SUMMARIES__);
+  const notifs = notifData.notifications || {};
+  const settings = settingsData.settings || {};
+  window.__LAST_SETTINGS__ = settings;
+  renderSystemPanel(statusData.status || {}, settings);
+  renderRecentFeed(notifs, hours);
+  if (window.lucide) lucide.createIcons();
+  if (window.initTheme) initTheme();
   const n = (cfg.config.targets || []).length;
   const applied =
     sumData.hours_requested != null ? sumData.hours_requested : hours;
   flashStatus(`${n} đối tượng · hiển thị ${applied} giờ gần nhất`, true);
+}
+
+let lastKnownScanAt = null;
+let uiRefreshTimer = null;
+
+function formatAutoScanStatus(st) {
+  if (!st) return "—";
+  if (st.is_scanning) return "Đang quét nền…";
+  if (!st.enabled) return "Quét tự động: tắt";
+  const parts = [];
+  if (st.last_scan_at) {
+    const t = new Date(st.last_scan_at.replace(" ", "T"));
+    const when = Number.isNaN(t.getTime())
+      ? st.last_scan_at
+      : t.toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" });
+    parts.push(`Thời điểm quét: ${when}`);
+    if (st.last_processed_new > 0) parts.push(`+${st.last_processed_new} tin`);
+  }
+  if (st.next_scan_at && !st.is_scanning) {
+    const n = new Date(st.next_scan_at.replace(" ", "T"));
+    if (!Number.isNaN(n.getTime())) {
+      const mins = Math.max(0, Math.round((n.getTime() - Date.now()) / 60000));
+      parts.push(`Lần quét tiếp theo trong: ${mins} phút`);
+    }
+  }
+  parts.push(`Chu kỳ quét hiện tại: ${st.interval_minutes || "?"} phút/lần`);
+  if (st.is_scanning) {
+    return parts.filter((p) => !p.startsWith("Tiếp:")).join(" · ");
+  }
+  return parts.join(" · ");
+}
+
+async function pollMonitorStatus() {
+  try {
+    const res = await fetch("/api/monitor/status");
+    const data = await res.json();
+    if (!data.success) return;
+    const st = data.status || {};
+    renderSystemPanel(st, window.__LAST_SETTINGS__ || {});
+
+    const scanAt = st.last_scan_at || null;
+    if (scanAt && scanAt !== lastKnownScanAt) {
+      lastKnownScanAt = scanAt;
+      if (!st.is_scanning) {
+        await loadAll();
+      }
+    }
+  } catch {
+    /* bỏ qua lỗi mạng tạm */
+  }
+}
+
+function startLiveRefresh(seconds) {
+  if (uiRefreshTimer) clearInterval(uiRefreshTimer);
+  const sec = Math.max(10, Math.min(120, Number(seconds) || 30));
+  uiRefreshTimer = setInterval(() => {
+    pollMonitorStatus();
+  }, sec * 1000);
+  pollMonitorStatus();
 }
 
 function initDashboard() {
@@ -376,9 +572,20 @@ function initDashboard() {
   });
   document.getElementById("hoursRangeInput")?.addEventListener("change", applyHoursFilter);
 
-  loadAll().catch((e) => {
-    flashStatus(e?.message || String(e), false);
-  });
+  loadAll()
+    .then(async () => {
+      try {
+        const res = await fetch("/api/settings");
+        const data = await res.json();
+        const sec = data.settings?.ui_refresh_seconds ?? 30;
+        startLiveRefresh(sec);
+      } catch {
+        startLiveRefresh(30);
+      }
+    })
+    .catch((e) => {
+      flashStatus(e?.message || String(e), false);
+    });
 }
 
 window.flashStatus = flashStatus;

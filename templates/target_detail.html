@@ -5,7 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Chi tiết đối tượng</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/isr-theme.css" />
+  <link rel="stylesheet" href="/static/css/isr-theme.css?v=3" />
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem("ui-theme") === "light") {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <script src="/static/js/theme.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body>
@@ -17,6 +27,16 @@
         <a href="#sec-biendong">Chức vụ</a>
       </div>
       <div class="main-actions">
+        <button
+          type="button"
+          class="btn btn-glass btn-sm theme-toggle-btn"
+          data-theme-toggle
+          aria-pressed="false"
+          title="Chuyển sang giao diện sáng"
+        >
+          <i data-lucide="sun" data-theme-icon></i>
+          <span data-theme-label>Giao diện sáng</span>
+        </button>
         <a class="btn btn-glass btn-sm" id="exportLink" href="#"><i data-lucide="download"></i> Tải JSON</a>
       </div>
     </div>

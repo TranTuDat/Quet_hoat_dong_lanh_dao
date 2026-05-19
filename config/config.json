@@ -1,12 +1,19 @@
 {
-  "gemini_api_key": "AIzaSyCPv97NE2tUKvmGskrjfY0lKkh8Jl7C5Y8",
+  "gemini_api_key": "AIzaSyCZLABT-riGRn29vJz-Q9ij_b-6AVT3Dos",
   "gemini_model": "gemini-2.5-flash",
+  "auto_scan_enabled": true,
   "scan_interval_minutes": 60,
+  "ui_refresh_seconds": 30,
   "google_news": {
     "language": "vi",
     "country": "VN",
-    "max_results_per_target": 50,
+    "max_results_per_target": 15,
     "filter_chinh_thong_only": true,
+    "use_rss_feeds": true,
+    "rss_max_per_feed": 40,
+    "decode_workers": 4,
+    "gemini_workers": 3,
+    "decode_interval": 0.15,
     "activity_report_hours": 24,
     "role_change_report_hours": 168,
     "merge_duplicate_articles": false,
@@ -20,6 +27,22 @@
     {
       "name": "Lê Minh Hưng",
       "position": "Thủ tướng Chính phủ"
+    },
+    {
+      "name": "Bùi Thị Minh Hoài",
+      "position": "Chủ tịch Mặt trận Tổ quốc Việt Nam"
+    },
+    {
+      "name": "Phan Văn Giang",
+      "position": "Bộ trưởng Bộ Quốc phòng"
+    },
+    {
+      "name": "Nguyễn Trọng Nghĩa",
+      "position": "Chủ nhiệm Tổng cục chính trị"
+    },
+    {
+      "name": "Giá vàng",
+      "position": ""
     }
   ],
   "telegram": {

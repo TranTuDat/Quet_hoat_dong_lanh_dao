@@ -47,7 +47,17 @@ def load_telegram_sent_keys() -> Set[str]:
     data = read_json(TELEGRAM_SENT_PATH, default=[])
     if not isinstance(data, list):
         return set()
-    return {str(x).strip() for x in data if isinstance(x, str) and str(x).strip()}
+    out: Set[str] = set()
+    for x in data:
+        if not isinstance(x, str):
+            continue
+        k = str(x).strip()
+        if not k:
+            continue
+        if "|scan|" in k:
+            continue
+        out.add(k)
+    return out
 
 
 def save_telegram_sent_keys(keys: Set[str]) -> None:
@@ -148,8 +158,9 @@ def format_target_empty(index: int, target_name: str, *, hours: float) -> str:
     )
 
 
-def scan_report_key(target_name: str, scan_id: str) -> str:
-    return f"{target_name}|scan|{scan_id}"
+def empty_status_key(target_name: str) -> str:
+    """Đã gửi tin 'không có hoạt động' — không gửi lại cho đến khi có tin mới."""
+    return f"{str(target_name or '').strip()}|empty_status"
 
 
 def explain_telegram_error(raw: str) -> str:
@@ -232,15 +243,17 @@ def notify_records(
     scan_id: str = "",
 ) -> Dict[str, Any]:
     """
-    Sau mỗi lần quét, gửi Telegram cho từng đối tượng trong config:
-    - Có hoạt động / thay đổi chức vụ: báo cáo chi tiết (khi có tin mới chưa gửi)
-    - Không có gì: tin thông báo trống để người dùng biết đã quét
+    Gửi Telegram theo đối tượng:
+    - Có tin MỚI lần này (chưa gửi URL) → báo cáo đầy đủ
+    - Đã có hoạt động cũ, không tin mới → không gửi (tránh spam)
+    - Không hoạt động / biến động trong cửa sổ → tin trống (một lần đến khi có tin mới)
     """
     result = {
         "sent": 0,
         "skipped_dup": 0,
         "skipped_filter": 0,
         "skipped_no_new": 0,
+        "skipped_already_notified": 0,
         "sent_empty": 0,
         "errors": [],
         "enabled": False,
@@ -256,6 +269,7 @@ def notify_records(
     sent_empty = 0
     skipped_dup = 0
     skipped_filter = 0
+    skipped_already = 0
     errors: List[str] = []
 
     notif_data = notifs if isinstance(notifs, dict) else {}
@@ -268,7 +282,6 @@ def notify_records(
 
     cutoff = datetime.now() - timedelta(hours=max(0.1, float(hours)))
     grouped = _group_new_by_target(new_records)
-    scan_key = str(scan_id or datetime.now().isoformat(timespec="seconds"))
 
     targets_order: List[str] = []
     if all_targets:
@@ -294,57 +307,59 @@ def notify_records(
 
         batch = grouped.get(target_name, [])
         pending = [r for r in batch if notify_key(r) not in sent_keys]
-        report_key = scan_report_key(target_name, scan_key)
         has_content = role_change or len(rows_hd) > 0
+        empty_key = empty_status_key(target_name)
 
-        # Không có thay đổi chức vụ, không có hoạt động → vẫn gửi tin thông báo
-        if not has_content:
-            if report_key in sent_keys:
-                skipped_dup += 1
-                continue
-            body = format_target_empty(idx, target_name, hours=hours)
+        if pending:
+            if _as_bool(tg.get("notify_role_change_only"), False):
+                pending_change = any(
+                    isinstance(r.get("ai_result"), dict)
+                    and r["ai_result"].get("Is_Change")
+                    for r in pending
+                )
+                if not role_change and not pending_change:
+                    skipped_filter += 1
+                    continue
+
+            body = format_target_digest(
+                idx,
+                target_name,
+                hours=hours,
+                role_change=role_change,
+                activity_rows=rows_hd,
+            )
             out = send_message(token, chat_id, header + body, use_html=False)
             if out.get("ok"):
-                sent_keys.add(report_key)
+                for r in pending:
+                    sent_keys.add(notify_key(r))
+                sent_keys.discard(empty_key)
                 sent += 1
-                sent_empty += 1
-                print(f"  [TELEGRAM] đã gửi (trống): {target_name}")
+                print(
+                    f"  [TELEGRAM] bao cao moi: {target_name} "
+                    f"({len(pending)} tin / {h_label}h)"
+                )
             else:
                 err = str(out.get("error") or "unknown")
                 errors.append(f"{target_name}: {err}")
                 print(f"  [TELEGRAM] FAIL {target_name}: {err}")
             continue
 
-        if report_key in sent_keys:
-            skipped_dup += len(pending) if pending else 1
+        if has_content:
+            skipped_already += 1
+            print(f"  [TELEGRAM] bo qua {target_name}: tin cu da gui truoc do")
             continue
 
-        if _as_bool(tg.get("notify_role_change_only"), False):
-            pending_change = any(
-                isinstance(r.get("ai_result"), dict) and r["ai_result"].get("Is_Change")
-                for r in pending
-            )
-            if not role_change and not pending_change:
-                skipped_filter += 1
-                continue
+        if empty_key in sent_keys:
+            skipped_dup += 1
+            continue
 
-        body = format_target_digest(
-            idx,
-            target_name,
-            hours=hours,
-            role_change=role_change,
-            activity_rows=rows_hd,
-        )
+        body = format_target_empty(idx, target_name, hours=hours)
         out = send_message(token, chat_id, header + body, use_html=False)
         if out.get("ok"):
-            for r in pending:
-                sent_keys.add(notify_key(r))
-            sent_keys.add(report_key)
+            sent_keys.add(empty_key)
             sent += 1
-            print(
-                f"  [TELEGRAM] đã gửi báo cáo: {target_name} "
-                f"({len(rows_hd)} hoạt động / {h_label}h)"
-            )
+            sent_empty += 1
+            print(f"  [TELEGRAM] trong (khong hoat dong): {target_name}")
         else:
             err = str(out.get("error") or "unknown")
             errors.append(f"{target_name}: {err}")
@@ -358,6 +373,7 @@ def notify_records(
         "skipped_dup": skipped_dup,
         "skipped_filter": skipped_filter,
         "skipped_no_new": 0 if new_records else 1,
+        "skipped_already_notified": skipped_already,
         "sent_empty": sent_empty,
         "errors": errors[:5],
         "enabled": True,

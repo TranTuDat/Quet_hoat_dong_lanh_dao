@@ -14,7 +14,7 @@ Tài liệu mô tả toàn bộ cách cài đặt, sử dụng, cấu trúc thư
 - Hiển thị **bảng điều khiển** (dashboard) theo khung thời gian (giờ)
 - Gửi **báo cáo Telegram** sau mỗi lần quét (tùy chọn): có hoạt động / biến động thì báo chi tiết; không có gì trong cửa sổ báo cáo thì vẫn gửi tin *trống* để biết đã quét
 
-**Không** tự quét nền — mỗi lần cần dữ liệu mới, bạn bấm **Quét** (hoặc gọi API `/monitor/run`).
+**Quét tự động nền** theo chu kỳ (`auto_scan_enabled`, `scan_interval_minutes`) — dashboard tự làm mới khi có lượt quét mới. Vẫn có thể bấm **Quét** để quét ngay.
 
 ---
 
@@ -55,7 +55,8 @@ flowchart LR
 5. Bỏ qua URL đã xử lý (`history.json`)
 6. Gửi từng bài mới cho Gemini phân tích
 7. Lưu bài đủ điều kiện vào `notifications.json`
-8. Gửi Telegram (nếu bật): **một tin / đối tượng / lần quét** — báo cáo đầy đủ hoặc tin trống
+8. Gửi Telegram (nếu bật): **một tin / đối tượng / lần quét** — báo cáo đầy đủ hoặc tin trống  
+9. **Lặp lại** bước 1–8 theo chu kỳ (mặc định 15 phút) nếu bật quét tự động
 
 ---
 
@@ -74,7 +75,8 @@ Phan_mem/
 ├── data/                    # Dữ liệu chạy (tự tạo/cập nhật)
 │   ├── notifications.json   # Tin đã lưu (2 kênh)
 │   ├── history.json         # URL đã quét (tránh gọi AI trùng)
-│   └── telegram_sent.json   # Khóa tin Telegram đã gửi (tránh trùng)
+│   ├── telegram_sent.json   # Khóa tin Telegram đã gửi
+│   └── url_decode_cache.json # Cache decode link Google News
 │
 ├── src/                     # Mã nguồn Python
 │   ├── web.py               # Flask: giao diện + REST API
@@ -225,7 +227,11 @@ Mảng các object:
 
 ```json
 [
-  { "name": "VnExpress", "homepage_url": "https://vnexpress.net/" }
+  {
+    "name": "VnExpress",
+    "homepage_url": "https://vnexpress.net/",
+    "rss_url": "https://vnexpress.net/rss/tin-moi-nhat.rss"
+  }
 ]
 ```
 
@@ -255,7 +261,7 @@ Mảng chuỗi khóa đã gửi Telegram, ví dụ:
 | Dạng khóa | Ý nghĩa |
 |-----------|---------|
 | `Tên đối tượng\|https://...` | Bài báo đã gửi (không gửi lại cùng URL) |
-| `Tên đối tượng\|scan\|2026-05-18T15:30:00` | Đã gửi báo cáo cho lần quét đó |
+| `Tên đối tượng\|empty_status` | Đã gửi tin trống (không gửi lại đến khi có tin mới) |
 
 Có thể xóa file này nếu muốn **gửi lại** toàn bộ (cẩn thận trùng tin trên Telegram).
 
@@ -270,7 +276,27 @@ Có thể xóa file này nếu muốn **gửi lại** toàn bộ (cẩn thận t
 | Hoạt động | Tên đối tượng | `hoatdong` |
 | Biến động chức vụ | Tên + từ khóa (bổ nhiệm, miễn nhiệm…) | `biendong` |
 
-Cùng một bài có thể đến từ một trong hai truy vấn; hệ thống **không gộp trùng** giữa hai loại truy vấn trong một lần quét (chỉ trùng URL trong cùng lần).
+Cùng một bài có thể xuất hiện ở cả hai truy vấn. Hệ thống **ưu tiên biến động chức vụ**: nếu trùng URL, bài **hoạt động** bị bỏ — chỉ phân tích **một lần** (loại `biendong`).
+
+### 7.1.1. RSS báo chính thống (nhanh)
+
+Khi `use_rss_feeds: true`, hệ thống đọc feed từ `Chinh_thong.json` (trường `rss_url` hoặc RSS mặc định theo domain), lọc bài có tên đối tượng. Link RSS **trực tiếp** — không cần decode Google News.
+
+| Tối ưu | Mô tả |
+|--------|--------|
+| **A** | URL đã trong `history.json` → bỏ qua **trước** bước decode |
+| **B** | Decode Google News **song song** + cache `data/url_decode_cache.json` |
+| **C** | Gọi Gemini **song song** (`gemini_workers`, mặc định 3) |
+
+Cấu hình trong `google_news`:
+
+```json
+"use_rss_feeds": true,
+"rss_max_per_feed": 40,
+"decode_workers": 4,
+"gemini_workers": 3,
+"decode_interval": 0.15
+```
 
 ### 7.2. Kết quả Gemini (`ai_result`)
 
@@ -322,19 +348,23 @@ Khi gọi API với `?hours=24`, hệ thống **ưu tiên 24 giờ** từ giao d
 
 ### 8.5. Khi nào gửi tin? (sau mỗi lần quét)
 
-Telegram bật → với **mỗi đối tượng** trong `config.json`, hệ thống gửi **tối đa một tin** mỗi lần bấm **Quét** (hoặc `POST /monitor/run`).
-
-Cửa sổ thời gian lấy từ `google_news.activity_report_hours` (mặc định 24), trừ khi UI truyền `hours` khi quét.
+Telegram bật → với **mỗi đối tượng**, tối đa **một tin** mỗi lần quét (tự động hoặc thủ công). **Không gửi lại** báo cáo đầy đủ nếu tin đã gửi trước đó.
 
 | Tình huống | Tin gửi đi |
 |------------|------------|
-| Trong cửa sổ báo cáo: **không** hoạt động, **không** biến động chức vụ | Tin **trống** (kể cả lần quét sau không có URL mới) |
-| Có hoạt động hoặc biến động chức vụ trong cửa sổ | **Báo cáo đầy đủ** (liệt kê hoạt động + link) |
-| Lần quét không lưu tin mới nhưng vẫn còn hoạt động cũ trong 24h | Báo cáo đầy đủ (tổng hợp từ `notifications.json`), **không** gửi tin trống |
+| Có **tin mới** lần này (URL chưa gửi Telegram) | **Báo cáo đầy đủ** (một lần), rồi ghi nhớ URL |
+| Không tin mới, nhưng vẫn còn hoạt động cũ trong cửa sổ 24h | **Không gửi** (tránh spam) |
+| Không tin mới, không hoạt động / biến động trong cửa sổ | Tin **trống** (*Không có hoạt động*) — **một lần** cho đến khi có tin mới |
+| Đã gửi tin trống rồi, các lần quét sau vẫn không có gì | **Không gửi lại** |
 
-**Ví dụ lần quét 2:** mọi URL đã nằm trong `history.json` → không có `[ARTICLE]` mới; nếu trong 24h vẫn không có bản ghi hoạt động/chức vụ → nhận tin trống trên Telegram.
+**Tùy chọn “Chỉ thông báo thay đổi chức vụ”:** chỉ áp dụng khi có **tin mới**; tin trống vẫn gửi khi không có gì trong cửa sổ.
 
-**Tùy chọn “Chỉ thông báo thay đổi chức vụ”:** bật thì **không** gửi báo cáo chỉ có hoạt động; vẫn gửi tin trống khi không có gì (nếu không bị lọc).
+### 8.5.1. Quét tự động nền
+
+- Chu kỳ: `scan_interval_minutes` (tối thiểu **5 phút**), đọc lại từ `config.json` **mỗi vòng**.
+- Thời gian chờ tính từ **đầu chu kỳ** (sau khi quét xong, chờ phần còn lại của chu kỳ).
+- **Lưu cài đặt** → chu kỳ mới áp dụng ngay (không cần khởi động lại server).
+- Một lần quét có thể kéo dài (GNews + AI) — lần quét tiếp theo không bắt đầu cho đến khi hết chu kỳ.
 
 ### 8.6. Mẫu nội dung tin nhắn
 
@@ -397,7 +427,8 @@ Base: `http://localhost:8000`
 | GET | `/api/settings` | Cài đặt + danh sách báo |
 | POST | `/api/settings` | Lưu cài đặt |
 | POST | `/api/settings/telegram-test` | Gửi tin thử Telegram |
-| POST | `/monitor/run` | Chạy quét một lần |
+| GET | `/api/monitor/status` | Trạng thái quét tự động (đang quét, lần cuối, lần tới) |
+| POST | `/monitor/run` | Chạy quét một lần (thủ công) |
 
 Phản hồi quét thành công (rút gọn):
 

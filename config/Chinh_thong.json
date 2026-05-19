@@ -1,14 +1,17 @@
 [
   {
     "name": "VnExpress",
-    "homepage_url": "https://vnexpress.net/"
+    "homepage_url": "https://vnexpress.net/",
+    "rss_url": "https://vnexpress.net/rss/tin-moi-nhat.rss"
   },
   {
     "name": "Báo Tuổi trẻ",
-    "homepage_url": "https://tuoitre.vn/"
+    "homepage_url": "https://tuoitre.vn/",
+    "rss_url": "https://tuoitre.vn/rss/tin-moi-nhat.htm"
   },
   {
     "name": "Báo Thanh niên",
-    "homepage_url": "https://thanhnien.vn/"
+    "homepage_url": "https://thanhnien.vn/",
+    "rss_url": "https://thanhnien.vn/rss/home.rss"
   }
 ]

@@ -8,6 +8,7 @@ from urllib.parse import quote
 from flask import Flask, Response, jsonify, render_template, request
 
 from src import monitor
+from src.auto_scanner import get_auto_scanner
 from src.json_io import read_json, write_json
 from src.telegram_notify import send_test_message
 from src.paths import (
@@ -20,6 +21,8 @@ from src.paths import (
 )
 
 migrate_legacy_files()
+
+_AUTO_SCANNER = get_auto_scanner()
 
 app = Flask(
     __name__,
@@ -293,6 +296,14 @@ def api_get_settings():
                 "merge_duplicate_articles": _as_bool(gn.get("merge_duplicate_articles"), False),
                 "use_event_intelligence": _as_bool(gn.get("use_event_intelligence"), False),
                 "max_results_per_target": int(gn.get("max_results_per_target") or 15),
+                "use_rss_feeds": _as_bool(gn.get("use_rss_feeds"), True),
+                "auto_scan_enabled": _as_bool(cfg.get("auto_scan_enabled"), True),
+                "scan_interval_minutes": max(
+                    5, min(1440, int(cfg.get("scan_interval_minutes") or 60))
+                ),
+                "ui_refresh_seconds": max(
+                    10, min(120, int(cfg.get("ui_refresh_seconds") or 30))
+                ),
                 **_telegram_settings_payload(tg),
             },
             "press_sources": [p for p in press if isinstance(p, dict)],
@@ -321,6 +332,22 @@ def api_save_settings():
             gn["max_results_per_target"] = max(1, min(50, n))
         except (TypeError, ValueError):
             pass
+    if "use_rss_feeds" in data:
+        gn["use_rss_feeds"] = _as_bool(data.get("use_rss_feeds"), True)
+    if "auto_scan_enabled" in data:
+        cfg["auto_scan_enabled"] = _as_bool(data.get("auto_scan_enabled"), True)
+    if "scan_interval_minutes" in data:
+        try:
+            n = int(data.get("scan_interval_minutes"))
+            cfg["scan_interval_minutes"] = max(5, min(1440, n))
+        except (TypeError, ValueError):
+            pass
+    if "ui_refresh_seconds" in data:
+        try:
+            n = int(data.get("ui_refresh_seconds"))
+            cfg["ui_refresh_seconds"] = max(10, min(120, n))
+        except (TypeError, ValueError):
+            pass
 
     if "enabled" in data:
         tg["enabled"] = _as_bool(data.get("enabled"), False)
@@ -334,6 +361,17 @@ def api_save_settings():
     if "press_sources" in data:
         sources = data.get("press_sources")
         if isinstance(sources, list):
+            from src.rss_fetch import guess_rss_url
+
+            existing = read_json(CHINH_THONG_PATH, default=[])
+            by_home: Dict[str, Dict[str, Any]] = {}
+            if isinstance(existing, list):
+                for row in existing:
+                    if isinstance(row, dict):
+                        home = str(row.get("homepage_url") or row.get("url") or "").strip()
+                        if home:
+                            by_home[home] = row
+
             cleaned = []
             for row in sources:
                 if not isinstance(row, dict):
@@ -341,11 +379,27 @@ def api_save_settings():
                 name = str(row.get("name", "")).strip()
                 url = str(row.get("homepage_url") or row.get("url") or "").strip()
                 if name and url:
-                    cleaned.append({"name": name, "homepage_url": url})
+                    item: Dict[str, str] = {"name": name, "homepage_url": url}
+                    rss = str(row.get("rss_url") or row.get("feed_url") or "").strip()
+                    if not rss.startswith("http"):
+                        old = by_home.get(url) or {}
+                        rss = str(old.get("rss_url") or "").strip()
+                    if not rss.startswith("http"):
+                        rss = guess_rss_url(url)
+                    if rss.startswith("http"):
+                        item["rss_url"] = rss
+                    cleaned.append(item)
             write_json(CHINH_THONG_PATH, cleaned)
 
     write_json(CONFIG_PATH, cfg)
-    return jsonify({"success": True, "message": "Đã lưu cài đặt", "config": cfg})
+    _AUTO_SCANNER.wake_reconfig()
+    return jsonify(
+        {
+            "success": True,
+            "message": "Đã lưu cài đặt — chu kỳ quét sẽ áp dụng ngay",
+            "config": cfg,
+        }
+    )
 
 
 @app.post("/api/settings/telegram-test")
@@ -365,11 +419,30 @@ def api_telegram_test():
     return jsonify({"success": True, "message": "Đã gửi tin nhắn thử"})
 
 
+@app.get("/api/monitor/status")
+def api_monitor_status():
+    st = _AUTO_SCANNER.get_status()
+    return jsonify({"success": True, "status": st})
+
+
 @app.post("/monitor/run")
 def monitor_run():
     try:
-        _ = request.get_json(silent=True) or {}
-        out = monitor.process_once()
+        body = request.get_json(silent=True) or {}
+        hours = None
+        if body.get("scan_hours") is not None:
+            try:
+                hours = float(body.get("scan_hours"))
+            except (TypeError, ValueError):
+                hours = None
+        out = _AUTO_SCANNER.run_scan(scan_hours=hours, source="manual")
         return jsonify({"success": True, **out})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _start_background_scanner() -> None:
+    _AUTO_SCANNER.start()
+
+
+_start_background_scanner()

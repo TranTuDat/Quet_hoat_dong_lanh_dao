@@ -17,6 +17,7 @@ CHINH_THONG_PATH = CONFIG_DIR / "Chinh_thong.json"
 NOTIFICATIONS_PATH = DATA_DIR / "notifications.json"
 HISTORY_PATH = DATA_DIR / "history.json"
 TELEGRAM_SENT_PATH = DATA_DIR / "telegram_sent.json"
+URL_DECODE_CACHE_PATH = DATA_DIR / "url_decode_cache.json"
 
 _LEGACY = {
     CONFIG_PATH: ROOT / "config.json",
@@ -24,6 +25,7 @@ _LEGACY = {
     NOTIFICATIONS_PATH: ROOT / "notifications.json",
     HISTORY_PATH: ROOT / "history.json",
     TELEGRAM_SENT_PATH: ROOT / "telegram_sent.json",
+    URL_DECODE_CACHE_PATH: ROOT / "url_decode_cache.json",
 }
 
 

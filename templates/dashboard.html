@@ -6,7 +6,17 @@
   <title>Giám sát tin tức</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/isr-theme.css" />
+  <link rel="stylesheet" href="/static/css/isr-theme.css?v=3" />
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem("ui-theme") === "light") {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <script src="/static/js/theme.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body>
@@ -16,7 +26,7 @@
         <div class="logo-row">
           <div class="logo-mark"><i data-lucide="radar"></i></div>
           <div>
-            <h1>Hệ thống giám sát</h1>
+            <h1>Hệ thống tự động báo cáo</h1>
             <div class="sub">Thay đổi chức vụ và hoạt động của lãnh đạo</div>
           </div>
         </div>
@@ -66,8 +76,20 @@
       <header class="main-top">
         <div>
           <h2>Kết quả lần quét gần nhất</h2>
+          <p class="meta">Thẻ tóm tắt theo đối tượng · cột phải: trạng thái & tin nóng</p>
         </div>
         <div class="main-actions">
+          <button
+            type="button"
+            class="btn btn-glass btn-sm theme-toggle-btn"
+            id="btnThemeToggle"
+            data-theme-toggle
+            aria-pressed="false"
+            title="Chuyển sang giao diện sáng"
+          >
+            <i data-lucide="sun" data-theme-icon></i>
+            <span data-theme-label>Giao diện sáng</span>
+          </button>
           <span class="status-pill" id="statusLine">—</span>
           <button type="button" class="btn btn-glass btn-icon" id="btnRefresh" title="Tải lại">
             <i data-lucide="refresh-cw"></i>
@@ -79,7 +101,21 @@
         </div>
       </header>
       <div class="main-content">
-        <div class="feed" id="summariesList"></div>
+        <div class="main-dashboard-grid">
+          <div class="dashboard-primary">
+            <div class="feed" id="summariesList"></div>
+          </div>
+          <aside class="dashboard-aside" aria-label="Bảng tin và trạng thái">
+            <section class="side-panel">
+              <h3 class="side-panel-title"><i data-lucide="activity"></i> Trạng thái hệ thống</h3>
+              <div class="side-panel-body" id="systemPanelBody">—</div>
+            </section>
+            <section class="side-panel side-panel-recent">
+              <h3 class="side-panel-title"><i data-lucide="newspaper"></i> Tin mới nhất</h3>
+              <div class="side-panel-body side-panel-body-scroll" id="recentFeedBody">—</div>
+            </section>
+          </aside>
+        </div>
       </div>
     </main>
   </div>
@@ -127,10 +163,47 @@
           </label>
           <label class="setting-row">
             <div class="lbl">
+              <strong>Quét RSS báo chính thống</strong>
+              <span>Link trực tiếp, không decode Google News — nhanh hơn</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setUseRss" checked />
+              <span class="track"></span>
+            </label>
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
               <strong>Số tin tối đa / đối tượng</strong>
               <span>Mỗi lần quét Google News</span>
             </div>
             <input class="inp-num" type="number" id="setMaxResults" min="1" max="50" value="15" />
+          </label>
+        </div>
+        <div class="settings-group">
+          <h3>Quét tự động (real-time)</h3>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Bật quét nền</strong>
+              <span>Tự quét theo chu kỳ khi server đang chạy</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setAutoScan" checked />
+              <span class="track"></span>
+            </label>
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Chu kỳ quét (phút)</strong>
+              <span>Tối thiểu 5 phút (tránh hết quota API)</span>
+            </div>
+            <input class="inp-num" type="number" id="setScanInterval" min="5" max="1440" value="15" />
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Làm mới giao diện (giây)</strong>
+              <span>Tự tải lại thẻ khi có lượt quét mới</span>
+            </div>
+            <input class="inp-num" type="number" id="setUiRefresh" min="10" max="120" value="30" />
           </label>
         </div>
         <div class="settings-group">
@@ -184,7 +257,7 @@
     </div>
   </div>
 
-  <script src="/static/js/dashboard.js?v=6"></script>
+  <script src="/static/js/dashboard.js?v=9"></script>
   <script src="/static/js/settings.js?v=2"></script>
 </body>
 </html>

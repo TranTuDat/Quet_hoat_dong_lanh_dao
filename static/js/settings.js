@@ -71,6 +71,14 @@
     document.getElementById("setMergeDup").checked = !!s.merge_duplicate_articles;
     document.getElementById("setEventIntel").checked = !!s.use_event_intelligence;
     document.getElementById("setMaxResults").value = String(s.max_results_per_target ?? 15);
+    const rssEl = document.getElementById("setUseRss");
+    if (rssEl) rssEl.checked = s.use_rss_feeds !== false;
+    const autoEl = document.getElementById("setAutoScan");
+    if (autoEl) autoEl.checked = s.auto_scan_enabled !== false;
+    const intEl = document.getElementById("setScanInterval");
+    if (intEl) intEl.value = String(s.scan_interval_minutes ?? 15);
+    const uiEl = document.getElementById("setUiRefresh");
+    if (uiEl) uiEl.value = String(s.ui_refresh_seconds ?? 30);
     document.getElementById("setTelegramEnabled").checked = !!s.enabled;
     document.getElementById("setTelegramRoleOnly").checked = !!s.notify_role_change_only;
     document.getElementById("setTelegramToken").value = s.bot_token || "";
@@ -79,6 +87,7 @@
     pressSources = (data.press_sources || []).map((p) => ({
       name: p.name || "",
       homepage_url: p.homepage_url || p.url || "",
+      rss_url: p.rss_url || "",
     }));
     renderPressList();
   }
@@ -104,6 +113,13 @@
       merge_duplicate_articles: document.getElementById("setMergeDup").checked,
       use_event_intelligence: document.getElementById("setEventIntel").checked,
       max_results_per_target: Number(document.getElementById("setMaxResults").value) || 15,
+      use_rss_feeds: document.getElementById("setUseRss")?.checked !== false,
+      auto_scan_enabled: document.getElementById("setAutoScan")?.checked !== false,
+      scan_interval_minutes: Math.max(
+        5,
+        Number(document.getElementById("setScanInterval")?.value) || 15
+      ),
+      ui_refresh_seconds: Number(document.getElementById("setUiRefresh")?.value) || 30,
       enabled: document.getElementById("setTelegramEnabled").checked,
       notify_role_change_only: document.getElementById("setTelegramRoleOnly").checked,
       bot_token: document.getElementById("setTelegramToken").value.trim(),

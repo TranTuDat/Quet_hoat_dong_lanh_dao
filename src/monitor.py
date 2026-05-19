@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 
 from gnews import GNews
 
@@ -17,10 +19,12 @@ from src.paths import (
     CONFIG_PATH,
     HISTORY_PATH,
     NOTIFICATIONS_PATH,
+    URL_DECODE_CACHE_PATH,
     migrate_legacy_files,
     path_str,
 )
 from src.press_whitelist import PressWhitelist
+from src.rss_fetch import collect_rss_for_target
 from src.telegram_notify import is_telegram_enabled, notify_records
 
 migrate_legacy_files()
@@ -31,14 +35,25 @@ def is_google_news_url(url: str) -> bool:
     return "news.google.com" in u or "google.com/rss/articles" in u
 
 
-def _decode_google_news_url(url: str) -> Optional[str]:
+def load_decode_cache() -> Dict[str, str]:
+    data = read_json(URL_DECODE_CACHE_PATH, default={})
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if k and v}
+
+
+def save_decode_cache(cache: Dict[str, str]) -> None:
+    write_json(URL_DECODE_CACHE_PATH, cache)
+
+
+def _decode_google_news_url(url: str, *, interval: float = 0.15) -> Optional[str]:
     u = str(url or "").strip()
     if not u or not is_google_news_url(u):
         return u if u.startswith("http") else None
     try:
         from googlenewsdecoder import gnewsdecoder
 
-        out = gnewsdecoder(u, interval=0.2)
+        out = gnewsdecoder(u, interval=max(0.05, float(interval)))
         if isinstance(out, dict):
             dec = str(out.get("decoded_url") or out.get("url") or "").strip()
             if dec.startswith("http"):
@@ -48,21 +63,95 @@ def _decode_google_news_url(url: str) -> Optional[str]:
     return None
 
 
-def decode_batch(urls: List[str]) -> Dict[str, str]:
+def decode_batch(
+    urls: List[str], *, workers: int = 4, interval: float = 0.15
+) -> Dict[str, str]:
+    """Decode song song + cache — chỉ gọi với URL chưa có trong history."""
     result: Dict[str, str] = {}
+    cache = load_decode_cache()
+    cache_dirty = False
+    to_decode: List[str] = []
+
     for raw in urls:
         u = str(raw or "").strip()
-        if not u:
-            continue
-        if u in result:
+        if not u or u in result:
             continue
         if not is_google_news_url(u):
             result[u] = u
             continue
-        dec = _decode_google_news_url(u)
-        if dec:
-            result[u] = dec
+        if u in cache and cache[u].startswith("http"):
+            result[u] = cache[u]
+            continue
+        to_decode.append(u)
+
+    if not to_decode:
+        return result
+
+    w = max(1, min(int(workers), 8))
+
+    def _job(u: str) -> Tuple[str, Optional[str]]:
+        return u, _decode_google_news_url(u, interval=interval)
+
+    with ThreadPoolExecutor(max_workers=w) as pool:
+        futures = [pool.submit(_job, u) for u in to_decode]
+        for fut in as_completed(futures):
+            try:
+                u, dec = fut.result()
+                if dec:
+                    result[u] = dec
+                    cache[u] = dec
+                    cache_dirty = True
+            except Exception:
+                pass
+
+    if cache_dirty:
+        save_decode_cache(cache)
     return result
+
+
+def _article_dedup_key(art: Dict[str, Any]) -> str:
+    resolved = str(art.get("resolved_url") or "").strip()
+    url = str(art.get("url") or "").strip()
+    pick = resolved if resolved.startswith("http") and not is_google_news_url(resolved) else url
+    if not pick.startswith("http"):
+        return ""
+    try:
+        p = urlparse(pick)
+        host = (p.netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        path = (p.path or "/").rstrip("/") or "/"
+        return f"{host}{path}"
+    except Exception:
+        return pick
+
+
+_KIND_RANK = {"biendong": 2, "hoatdong": 1}
+
+
+def _merge_article_pairs(
+    pairs: List[Tuple[Dict[str, Any], str]],
+) -> List[Tuple[Dict[str, Any], str]]:
+    """Trùng URL: ưu tiên biendong (bỏ hoatdong trùng — không phân tích 2 lần)."""
+    by_key: Dict[str, Tuple[Dict[str, Any], str]] = {}
+    for art, kind in pairs:
+        key = _article_dedup_key(art)
+        if not key:
+            continue
+        prev = by_key.get(key)
+        if prev is None or _KIND_RANK.get(kind, 0) > _KIND_RANK.get(prev[1], 0):
+            by_key[key] = (art, kind)
+    return list(by_key.values())
+
+
+def _scan_perf_options(gn: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "use_rss": _gn_bool(gn.get("use_rss_feeds"), True),
+        "rss_max_per_feed": max(5, min(80, int(gn.get("rss_max_per_feed") or 40))),
+        "decode_workers": max(1, min(8, int(gn.get("decode_workers") or 4))),
+        "gemini_workers": max(1, min(6, int(gn.get("gemini_workers") or 3))),
+        "decode_interval": max(0.05, float(gn.get("decode_interval") or 0.15)),
+    }
 
 
 ROLE_QUERY_SUFFIX = (
@@ -348,15 +437,18 @@ def _collect_articles_for_target(
     language: str,
     country: str,
     max_results: int,
+    whitelist: Optional[PressWhitelist] = None,
+    use_rss: bool = True,
+    rss_max_per_feed: int = 40,
 ) -> List[Tuple[Dict[str, Any], str]]:
-    """Trả (article, news_kind) — hoatdong | biendong; không gộp trùng."""
-    seen_urls: Set[str] = set()
-    out: List[Tuple[Dict[str, Any], str]] = []
+    """GNews + RSS; trùng URL ưu tiên biendong (bỏ hoatdong trùng)."""
+    pairs: List[Tuple[Dict[str, Any], str]] = []
 
     q_hd = str(target.name).strip()
     q_bd = f"{target.name} {ROLE_QUERY_SUFFIX}".strip()
 
-    for query, kind in ((q_hd, "hoatdong"), (q_bd, "biendong")):
+    # Biến động chức vụ trước — cùng bài với hoạt động sẽ giữ loại biendong
+    for query, kind in ((q_bd, "biendong"), (q_hd, "hoatdong")):
         print(f"[SCAN] target={target.name} kind={kind} query={query[:100]}...")
         try:
             batch = google_news_search(query, language=language, country=country, max_results=max_results)
@@ -364,28 +456,68 @@ def _collect_articles_for_target(
             print(f"  [ERR] GNews: {exc}")
             continue
         for art in batch:
-            if not isinstance(art, dict):
-                continue
-            url = str(art.get("url") or "").strip()
-            if not url or url in seen_urls:
-                continue
-            seen_urls.add(url)
-            out.append((art, kind))
-    return out
+            if isinstance(art, dict):
+                pairs.append((art, kind))
+
+    if use_rss and whitelist is not None:
+        print(f"[RSS] target={target.name} — quét feed báo chính thống...")
+        rss_pairs = collect_rss_for_target(
+            whitelist,
+            target.name,
+            max_per_feed=rss_max_per_feed,
+            role_query_suffix=ROLE_QUERY_SUFFIX,
+        )
+        if rss_pairs:
+            print(f"  [RSS] {len(rss_pairs)} bài khớp tên")
+        pairs.extend(rss_pairs)
+
+    merged = _merge_article_pairs(pairs)
+    skipped_hd = len(pairs) - len(merged)
+    if skipped_hd > 0:
+        print(f"  [DEDUP] bỏ {skipped_hd} bài trùng (ưu tiên biến động chức vụ)")
+    return merged
 
 
 def _apply_decode_and_whitelist(
     articles: List[Tuple[Dict[str, Any], str]],
     *,
+    target_name: str,
+    history_set: Set[str],
     whitelist: PressWhitelist,
     filter_press: bool,
-) -> List[Tuple[Dict[str, Any], str]]:
-    urls = [str(a.get("url") or "") for a, _ in articles]
-    decoded = decode_batch(urls)
-    kept: List[Tuple[Dict[str, Any], str]] = []
+    decode_workers: int = 4,
+    decode_interval: float = 0.15,
+) -> Tuple[List[Tuple[Dict[str, Any], str]], int]:
+    """Lọc history trước decode; chỉ decode URL Google News còn lại."""
+    pending: List[Tuple[Dict[str, Any], str]] = []
+    skipped_history = 0
+
     for art, kind in articles:
         url = str(art.get("url") or "").strip()
-        resolved = decoded.get(url) or (url if not is_google_news_url(url) else "")
+        if _history_key(target_name, url) in history_set:
+            skipped_history += 1
+            continue
+        pending.append((art, kind))
+
+    urls_to_decode = list(
+        {
+            str(a.get("url") or "").strip()
+            for a, _ in pending
+            if is_google_news_url(str(a.get("url") or ""))
+        }
+    )
+    decoded = decode_batch(
+        urls_to_decode, workers=decode_workers, interval=decode_interval
+    )
+
+    kept: List[Tuple[Dict[str, Any], str]] = []
+    for art, kind in pending:
+        url = str(art.get("url") or "").strip()
+        pre_resolved = str(art.get("resolved_url") or "").strip()
+        if pre_resolved.startswith("http"):
+            resolved = pre_resolved
+        else:
+            resolved = decoded.get(url) or (url if not is_google_news_url(url) else "")
         if filter_press and resolved and not whitelist.is_allowed_url(resolved):
             continue
         if filter_press and not resolved:
@@ -394,15 +526,49 @@ def _apply_decode_and_whitelist(
         if resolved:
             art["resolved_url"] = resolved
             meta = whitelist.press_for_url(resolved)
-            if meta.get("press_name"):
+            if meta.get("press_name") and not art.get("press_name"):
                 art["press_name"] = meta["press_name"]
-            if meta.get("press_domain"):
+            if meta.get("press_domain") and not art.get("press_domain"):
                 art["press_domain"] = meta["press_domain"]
         kept.append((art, kind))
-    return kept
+    return kept, skipped_history
 
 
-def process_once() -> Dict[str, Any]:
+def _process_gemini_batch(
+    gemini_key: str,
+    target: Target,
+    pending: List[Tuple[Dict[str, Any], str]],
+    *,
+    gemini_workers: int,
+) -> List[Tuple[Dict[str, Any], str, Dict[str, Any]]]:
+    """Gọi Gemini song song; trả (art, news_kind, ai_result)."""
+    if not pending:
+        return []
+
+    w = max(1, min(int(gemini_workers), 6))
+    out: List[Tuple[Dict[str, Any], str, Dict[str, Any]]] = []
+
+    def _one(item: Tuple[Dict[str, Any], str]) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
+        art, kind = item
+        ai = call_gemini_for_change(gemini_key, target, art)
+        return art, kind, ai
+
+    if w <= 1 or len(pending) == 1:
+        for item in pending:
+            out.append(_one(item))
+        return out
+
+    with ThreadPoolExecutor(max_workers=w) as pool:
+        futures = [pool.submit(_one, item) for item in pending]
+        for fut in as_completed(futures):
+            try:
+                out.append(fut.result())
+            except Exception as exc:
+                print(f"  [AI] worker error: {exc}")
+    return out
+
+
+def process_once(*, scan_hours: Optional[float] = None) -> Dict[str, Any]:
     cfg = load_config()
     gn = cfg.get("google_news") if isinstance(cfg.get("google_news"), dict) else {}
 
@@ -428,31 +594,56 @@ def process_once() -> Dict[str, Any]:
         if name:
             targets.append(Target(name=name, position=str(t.get("position", ""))))
 
+    perf = _scan_perf_options(gn)
     now_iso = datetime.now().isoformat(timespec="seconds")
     scan_results: List[Dict[str, Any]] = []
     saved_count = 0
     new_records: List[Dict[str, Any]] = []
     skipped_history_dup = 0
+    skipped_pre_decode = 0
 
     for target in targets:
         raw_pairs = _collect_articles_for_target(
-            target, language=language, country=country, max_results=max_results
+            target,
+            language=language,
+            country=country,
+            max_results=max_results,
+            whitelist=whitelist,
+            use_rss=perf["use_rss"],
+            rss_max_per_feed=perf["rss_max_per_feed"],
         )
-        pairs = _apply_decode_and_whitelist(
-            raw_pairs, whitelist=whitelist, filter_press=filter_press
+        pairs, skipped_hist = _apply_decode_and_whitelist(
+            raw_pairs,
+            target_name=target.name,
+            history_set=history_set,
+            whitelist=whitelist,
+            filter_press=filter_press,
+            decode_workers=perf["decode_workers"],
+            decode_interval=perf["decode_interval"],
         )
+        skipped_history_dup += skipped_hist
+        skipped_pre_decode += skipped_hist
+        pairs = _merge_article_pairs(pairs)
+
+        if not pairs:
+            continue
 
         for art, news_kind in pairs:
             url = str(art.get("url") or "").strip()
-            history_key = _history_key(target.name, url)
-            if history_key in history_set:
-                skipped_history_dup += 1
-                continue
-
             print(f"  [ARTICLE] {target.name} [{news_kind}] {url[:72]}...")
-            ai_result = call_gemini_for_change(gemini_key, target, art)
+
+        analyzed = _process_gemini_batch(
+            gemini_key,
+            target,
+            pairs,
+            gemini_workers=perf["gemini_workers"],
+        )
+
+        for art, news_kind, ai_result in analyzed:
+            url = str(art.get("url") or "").strip()
+            history_key = _history_key(target.name, url)
             print(
-                f"  [AI] matched={ai_result.get('Matched_Target')} "
+                f"  [AI] {target.name} matched={ai_result.get('Matched_Target')} "
                 f"activity={ai_result.get('Is_Activity')} change={ai_result.get('Is_Change')}"
             )
 
@@ -491,7 +682,9 @@ def process_once() -> Dict[str, Any]:
     save_notifications(notifs)
     save_history(list(history_set))
 
-    report_hours = resolve_activity_report_hours(24.0, gn)
+    report_hours = resolve_activity_report_hours(
+        float(scan_hours) if scan_hours is not None else 24.0, gn
+    )
     target_names = [t.name for t in targets]
     tg_result = notify_records(
         cfg,
@@ -518,6 +711,8 @@ def process_once() -> Dict[str, Any]:
         "processed": scan_results,
         "history_size": len(history_set),
         "skipped_history_dup": skipped_history_dup,
+        "skipped_pre_decode": skipped_pre_decode,
+        "scan_use_rss": perf["use_rss"],
         "timestamp": now_iso,
         "telegram_enabled": tg_enabled,
         "telegram_sent": tg_result.get("sent", 0),
@@ -525,6 +720,9 @@ def process_once() -> Dict[str, Any]:
         "telegram_skipped_filter": tg_result.get("skipped_filter", 0),
         "telegram_errors": tg_result.get("errors") or [],
         "telegram_sent_empty": tg_result.get("sent_empty", 0),
+        "telegram_skipped_already_notified": tg_result.get(
+            "skipped_already_notified", 0
+        ),
     }
 
 
