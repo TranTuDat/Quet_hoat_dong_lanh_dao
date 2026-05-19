@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Chi tiết đối tượng</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/isr-theme.css?v=3" />
+  <link rel="stylesheet" href="/static/css/isr-theme.css?v=5" />
   <script>
     (function () {
       try {
@@ -15,7 +15,7 @@
       } catch (e) {}
     })();
   </script>
-  <script src="/static/js/theme.js"></script>
+  <script src="/static/js/theme.js?v=2"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body>
@@ -27,6 +27,15 @@
         <a href="#sec-biendong">Chức vụ</a>
       </div>
       <div class="main-actions">
+        <button
+          type="button"
+          class="btn btn-primary btn-sm"
+          id="btnScanTarget"
+          title="Quét riêng đối tượng này (không quét các đối tượng khác)"
+        >
+          <span class="detail-spin" id="scanSpin" style="display:none;width:14px;height:14px;border-width:2px;vertical-align:-2px;margin-right:4px"></span>
+          <i data-lucide="play"></i> Quét riêng
+        </button>
         <button
           type="button"
           class="btn btn-glass btn-sm theme-toggle-btn"
@@ -123,6 +132,8 @@
       let hours = 24;
       const h = qs('hours');
       if(h){ const v = Number(String(h).replace(',','.')); if(v>0) hours = v; }
+      window.__DETAIL_TARGET__ = name;
+      window.__DETAIL_HOURS__ = hours;
 
       const spin = document.getElementById('spin');
       spin.style.display = 'block';
@@ -172,8 +183,38 @@
         spin.style.display = 'none';
       }
     }
+
+    async function scanCurrentTarget(){
+      const name = (window.__DETAIL_TARGET__ || '').trim();
+      const hours = window.__DETAIL_HOURS__ || 24;
+      const btn = document.getElementById('btnScanTarget');
+      const scanSpin = document.getElementById('scanSpin');
+      if(!name || !btn || btn.disabled) return;
+      btn.disabled = true;
+      if(scanSpin) scanSpin.style.display = 'inline-block';
+      try{
+        const res = await fetch('/monitor/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scan_hours: hours, target_name: name }),
+        });
+        const data = await res.json();
+        if(!res.ok || data.success === false){
+          throw new Error(data.error || ('Lỗi ' + res.status));
+        }
+        await load();
+        alert('Đã thêm ' + (data.processed_new || 0) + ' tin mới cho ' + name);
+      }catch(e){
+        alert(String(e?.message || e));
+      }finally{
+        btn.disabled = false;
+        if(scanSpin) scanSpin.style.display = 'none';
+      }
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
       if (window.lucide) lucide.createIcons();
+      document.getElementById('btnScanTarget')?.addEventListener('click', scanCurrentTarget);
       load();
     });
   </script>

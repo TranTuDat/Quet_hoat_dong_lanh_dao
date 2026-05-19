@@ -33,7 +33,9 @@ class AutoScanner:
         }
 
     def get_status(self) -> Dict[str, Any]:
-        return dict(self._state)
+        st = dict(self._state)
+        st["thread_alive"] = bool(self._thread and self._thread.is_alive())
+        return st
 
     def wake_reconfig(self) -> None:
         """Đánh thức vòng lặp sau khi đổi cài đặt — áp dụng chu kỳ mới sớm hơn."""
@@ -92,7 +94,10 @@ class AutoScanner:
             self._state["interval_minutes"] = interval
 
             if enabled:
-                self._run_scan(hours=hours, source="auto", blocking=False)
+                try:
+                    self._run_scan(hours=hours, source="auto", blocking=False)
+                except Exception as exc:
+                    print(f"[AUTO] scan failed (retry next cycle): {exc}")
 
             enabled, interval, hours = self._read_schedule()
             self._state["enabled"] = enabled
@@ -111,6 +116,7 @@ class AutoScanner:
         hours: float,
         source: str,
         blocking: bool,
+        target_name: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         acquired = self._lock.acquire(blocking=blocking)
         if not acquired:
@@ -120,9 +126,12 @@ class AutoScanner:
         try:
             self._state["is_scanning"] = True
             self._state["last_scan_source"] = source
-            print(f"[AUTO] Scan start ({source})")
+            label = f"[AUTO] Scan start ({source})"
+            if target_name:
+                label += f" target={target_name}"
+            print(label)
 
-            result = process_once(scan_hours=hours)
+            result = process_once(scan_hours=hours, target_name=target_name)
             now = datetime.now().isoformat(timespec="seconds")
 
             self._state["is_scanning"] = False
@@ -145,16 +154,27 @@ class AutoScanner:
             self._state["last_error"] = str(exc)
             self._state["last_scan_at"] = datetime.now().isoformat(timespec="seconds")
             print(f"  [AUTO] error: {exc}")
-            raise
+            if source != "auto":
+                raise
+            return None
         finally:
             self._lock.release()
 
     def run_scan(
-        self, *, scan_hours: Optional[float] = None, source: str = "manual"
+        self,
+        *,
+        scan_hours: Optional[float] = None,
+        source: str = "manual",
+        target_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         if scan_hours is None:
             _, _, scan_hours = self._read_schedule()
-        out = self._run_scan(hours=float(scan_hours), source=source, blocking=True)
+        out = self._run_scan(
+            hours=float(scan_hours),
+            source=source,
+            blocking=True,
+            target_name=target_name,
+        )
         if out is None:
             raise RuntimeError("Không thể quét — đang bận")
         return out

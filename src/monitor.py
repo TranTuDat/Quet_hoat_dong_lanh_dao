@@ -568,7 +568,7 @@ def _process_gemini_batch(
     return out
 
 
-def process_once(*, scan_hours: Optional[float] = None) -> Dict[str, Any]:
+def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[str] = None) -> Dict[str, Any]:
     cfg = load_config()
     gn = cfg.get("google_news") if isinstance(cfg.get("google_news"), dict) else {}
 
@@ -593,6 +593,12 @@ def process_once(*, scan_hours: Optional[float] = None) -> Dict[str, Any]:
         name = str(t.get("name", "")).strip()
         if name:
             targets.append(Target(name=name, position=str(t.get("position", ""))))
+
+    filter_name = str(target_name or "").strip()
+    if filter_name:
+        targets = [t for t in targets if t.name == filter_name]
+        if not targets:
+            raise ValueError(f'Không tìm thấy đối tượng "{filter_name}" trong cấu hình')
 
     perf = _scan_perf_options(gn)
     now_iso = datetime.now().isoformat(timespec="seconds")
@@ -714,6 +720,8 @@ def process_once(*, scan_hours: Optional[float] = None) -> Dict[str, Any]:
         "skipped_pre_decode": skipped_pre_decode,
         "scan_use_rss": perf["use_rss"],
         "timestamp": now_iso,
+        "scanned_target": filter_name or None,
+        "scanned_targets": [t.name for t in targets],
         "telegram_enabled": tg_enabled,
         "telegram_sent": tg_result.get("sent", 0),
         "telegram_skipped_dup": tg_result.get("skipped_dup", 0),

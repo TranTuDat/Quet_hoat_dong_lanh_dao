@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from typing import Any, Dict
 from urllib.parse import quote
+
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 from flask import Flask, Response, jsonify, render_template, request
 
@@ -29,6 +37,7 @@ app = Flask(
     template_folder=path_str(TEMPLATES_DIR),
     static_folder=path_str(STATIC_DIR),
 )
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
 def _ensure_gn(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -435,7 +444,10 @@ def monitor_run():
                 hours = float(body.get("scan_hours"))
             except (TypeError, ValueError):
                 hours = None
-        out = _AUTO_SCANNER.run_scan(scan_hours=hours, source="manual")
+        target_name = str(body.get("target_name") or "").strip() or None
+        out = _AUTO_SCANNER.run_scan(
+            scan_hours=hours, source="manual", target_name=target_name
+        )
         return jsonify({"success": True, **out})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

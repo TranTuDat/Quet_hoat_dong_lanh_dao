@@ -180,6 +180,9 @@ function renderTargets(cfg) {
         ${pos ? `<div class="t-pos">${escapeHtml(pos)}</div>` : ""}
       </div>
       <div class="t-ops">
+        <button type="button" class="btn btn-glass btn-icon btn-scan-target" data-scan-target="${escapeHtml(name)}" title="Quét riêng đối tượng này (không quét các đối tượng khác)">
+          <i data-lucide="play"></i>
+        </button>
         <button type="button" class="btn btn-glass btn-icon" data-edit="${idx}" title="Sửa">
           <i data-lucide="pencil"></i>
         </button>
@@ -196,6 +199,13 @@ function renderTargets(cfg) {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       startEditTarget(Number(btn.getAttribute("data-edit")));
+    });
+  });
+  targetsList.querySelectorAll("button[data-scan-target]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const name = btn.getAttribute("data-scan-target") || "";
+      if (name) runMonitorScan({ targetName: name });
     });
   });
   targetsList.querySelectorAll("button[data-del]").forEach((btn) => {
@@ -255,6 +265,9 @@ function renderSummaries(summaries) {
         </div>
         ${snippet ? `<p class="card-snippet">${escapeHtml(snippet)}</p>` : ""}
         <div class="card-actions">
+          <button type="button" class="btn btn-glass btn-sm btn-scan-target" data-scan-target="${escapeHtml(name)}" title="Quét riêng đối tượng này (không quét các đối tượng khác)">
+            <i data-lucide="play"></i> Quét riêng
+          </button>
           <a class="btn btn-glass btn-sm" href="${escapeHtml(href)}">
             <i data-lucide="arrow-right"></i> Chi tiết
           </a>
@@ -262,8 +275,13 @@ function renderSummaries(summaries) {
       </div>`;
 
     card.querySelector(".card-inner")?.addEventListener("click", (e) => {
-      if (e.target.closest("a")) return;
+      if (e.target.closest("a, button")) return;
       location.href = href;
+    });
+
+    card.querySelector("button[data-scan-target]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      runMonitorScan({ targetName: name });
     });
 
     summariesList.appendChild(card);
@@ -331,16 +349,6 @@ function renderSystemPanel(st, settings) {
     if (st.last_processed_new > 0) scanVal += ` (+${st.last_processed_new} tin)`;
   }
 
-  let nextVal = "—";
-  if (st?.next_scan_at && !scanning) {
-    const n = new Date(String(st.next_scan_at).replace(" ", "T"));
-    if (!Number.isNaN(n.getTime())) {
-      const mins = Math.max(0, Math.round((n.getTime() - Date.now()) / 60000));
-      nextVal = `~${mins} phút`;
-    }
-  }
-  if (scanning) nextVal = "Đang quét…";
-
   el.innerHTML =
     renderKpiRow(window.__LAST_SUMMARIES__ || []) +
     `
@@ -348,7 +356,6 @@ function renderSystemPanel(st, settings) {
     <div class="sys-row"><span class="lbl">Chu kỳ</span><span class="val">${st?.interval_minutes ?? settings?.scan_interval_minutes ?? "—"} phút</span></div>
     <div class="sys-row"><span class="lbl">Trạng thái</span><span class="val ${scanning ? "busy" : "ok"}">${scanning ? "Đang quét" : "Chờ"}</span></div>
     <div class="sys-row"><span class="lbl">Lần quét cuối</span><span class="val">${escapeHtml(scanVal)}</span></div>
-    <div class="sys-row"><span class="lbl">Lần quét tiếp</span><span class="val">${escapeHtml(nextVal)}</span></div>
     <div class="sys-row"><span class="lbl">Telegram</span><span class="val ${tgOn ? "ok" : ""}">${tgOn ? "Bật" : "Tắt"}</span></div>
   `;
 }
@@ -421,6 +428,71 @@ async function loadAll() {
 
 let lastKnownScanAt = null;
 let uiRefreshTimer = null;
+let scanBusy = false;
+
+function formatScanResultMessage(data, targetName) {
+  const who = targetName ? ` · ${targetName}` : "";
+  let msg = `Đã thêm ${data.processed_new || 0} tin${who}`;
+  if (data.skipped_history_dup > 0) {
+    msg += ` · bỏ qua ${data.skipped_history_dup} tin trùng (đã quét)`;
+  }
+  if (data.telegram_enabled) {
+    if (data.telegram_sent > 0) {
+      msg += ` · Telegram: ${data.telegram_sent} tin`;
+      if (data.telegram_sent_empty > 0) {
+        msg += ` (${data.telegram_sent_empty} trống)`;
+      }
+    } else if (data.processed_new > 0 && data.telegram_errors?.length) {
+      msg += ` · Telegram lỗi: ${data.telegram_errors[0]}`;
+    } else if (data.processed_new === 0) {
+      msg += ` · không có tin mới (URL đã quét trước — Telegram chỉ gửi khi có tin mới)`;
+    } else if (data.telegram_skipped_dup > 0) {
+      msg += ` · Telegram: tin đã gửi trước đó`;
+    }
+  }
+  return msg;
+}
+
+function setScanUiBusy(busy, targetName) {
+  const btnRunNow = document.getElementById("btnRunNow");
+  const runSpinner = document.getElementById("runSpinner");
+  if (btnRunNow) btnRunNow.disabled = busy;
+  if (runSpinner) {
+    runSpinner.style.display = busy && !targetName ? "inline-block" : "none";
+  }
+  document.querySelectorAll("[data-scan-target]").forEach((btn) => {
+    btn.disabled = busy;
+    const isThis = targetName && btn.getAttribute("data-scan-target") === targetName;
+    btn.classList.toggle("scanning", busy && isThis);
+  });
+}
+
+async function runMonitorScan({ targetName = null } = {}) {
+  if (scanBusy) {
+    flashStatus("Đang quét — vui lòng đợi", false);
+    return;
+  }
+  scanBusy = true;
+  setScanUiBusy(true, targetName);
+  try {
+    const label = targetName ? `Đang quét: ${targetName}…` : "Đang quét tất cả…";
+    flashStatus(label, false);
+    const hours = parseHoursRange();
+    const body = { scan_hours: hours };
+    if (targetName) body.target_name = targetName;
+    const data = await postJson("/monitor/run", body);
+    flashStatus(formatScanResultMessage(data, targetName), true);
+    await loadAll();
+  } catch (e) {
+    flashStatus(e?.message || String(e), false);
+    alert(e?.message || String(e));
+  } finally {
+    scanBusy = false;
+    setScanUiBusy(false);
+  }
+}
+
+window.runMonitorScan = runMonitorScan;
 
 function formatAutoScanStatus(st) {
   if (!st) return "—";
@@ -486,41 +558,7 @@ function initDashboard() {
   const targetPos = document.getElementById("targetPos");
   const btnAddTarget = document.getElementById("btnAddTarget");
 
-  btnRunNow.addEventListener("click", async () => {
-    try {
-      btnRunNow.disabled = true;
-      runSpinner.style.display = "inline-block";
-      flashStatus("Đang quét…", false);
-      const hours = parseHoursRange();
-      const data = await postJson("/monitor/run", { scan_hours: hours });
-      let msg = `Đã thêm ${data.processed_new || 0} tin`;
-      if (data.skipped_history_dup > 0) {
-        msg += ` · bỏ qua ${data.skipped_history_dup} tin trùng (đã quét)`;
-      }
-      if (data.telegram_enabled) {
-        if (data.telegram_sent > 0) {
-          msg += ` · Telegram: ${data.telegram_sent} tin`;
-          if (data.telegram_sent_empty > 0) {
-            msg += ` (${data.telegram_sent_empty} trống)`;
-          }
-        } else if (data.processed_new > 0 && data.telegram_errors?.length) {
-          msg += ` · Telegram lỗi: ${data.telegram_errors[0]}`;
-        } else if (data.processed_new === 0) {
-          msg += ` · không có tin mới (URL đã quét trước — Telegram chỉ gửi khi có tin mới)`;
-        } else if (data.telegram_skipped_dup > 0) {
-          msg += ` · Telegram: tin đã gửi trước đó`;
-        }
-      }
-      flashStatus(msg, true);
-      await loadAll();
-    } catch (e) {
-      flashStatus(e?.message || String(e), false);
-      alert(e?.message || String(e));
-    } finally {
-      runSpinner.style.display = "none";
-      btnRunNow.disabled = false;
-    }
-  });
+  btnRunNow.addEventListener("click", () => runMonitorScan());
 
   btnRefresh.addEventListener("click", () =>
     loadAll().catch((e) => {

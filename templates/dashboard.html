@@ -6,7 +6,7 @@
   <title>Giám sát tin tức</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/isr-theme.css?v=3" />
+  <link rel="stylesheet" href="/static/css/isr-theme.css?v=5" />
   <script>
     (function () {
       try {
@@ -16,7 +16,7 @@
       } catch (e) {}
     })();
   </script>
-  <script src="/static/js/theme.js"></script>
+  <script src="/static/js/theme.js?v=2"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body>
@@ -36,6 +36,16 @@
         <button type="button" class="btn btn-glass sidebar-settings-btn" id="btnOpenSettings">
           <i data-lucide="settings"></i> Cài đặt hệ thống
         </button>
+        <button
+          type="button"
+          class="btn btn-glass sidebar-settings-btn theme-toggle-btn theme-toggle-sidebar"
+          data-theme-toggle
+          aria-pressed="false"
+          title="Chuyển sang giao diện sáng"
+        >
+          <i data-lucide="sun" data-theme-icon></i>
+          <span data-theme-label>Giao diện sáng</span>
+        </button>
       </div>
 
       <div class="sidebar-section">
@@ -44,7 +54,7 @@
           <input class="inp-glass" type="text" id="hoursRangeInput" inputmode="decimal" value="24" aria-label="Giờ" />
           <span class="unit-tag">GIỜ</span>
           <button type="button" class="btn btn-glass btn-icon" id="btnApplyHours" title="Áp dụng">
-            <i data-lucide="check"></i>
+            <i data-lucide="check"></i><span class="unit-tag">Áp dụng</span>
           </button>
         </div>
       </div>
@@ -76,27 +86,15 @@
       <header class="main-top">
         <div>
           <h2>Kết quả lần quét gần nhất</h2>
-          <p class="meta">Thẻ tóm tắt theo đối tượng · cột phải: trạng thái & tin nóng</p>
         </div>
         <div class="main-actions">
-          <button
-            type="button"
-            class="btn btn-glass btn-sm theme-toggle-btn"
-            id="btnThemeToggle"
-            data-theme-toggle
-            aria-pressed="false"
-            title="Chuyển sang giao diện sáng"
-          >
-            <i data-lucide="sun" data-theme-icon></i>
-            <span data-theme-label>Giao diện sáng</span>
-          </button>
           <span class="status-pill" id="statusLine">—</span>
           <button type="button" class="btn btn-glass btn-icon" id="btnRefresh" title="Tải lại">
             <i data-lucide="refresh-cw"></i>
           </button>
-          <button type="button" class="btn btn-primary" id="btnRunNow" title="Quét tin">
+          <button type="button" class="btn btn-primary" id="btnRunNow" title="Quét tất cả đối tượng trong danh sách">
             <span class="spinner" id="runSpinner"></span>
-            <i data-lucide="play"></i> Quét
+            <i data-lucide="play"></i> Quét tất cả
           </button>
         </div>
       </header>
@@ -257,7 +255,7 @@
     </div>
   </div>
 
-  <script src="/static/js/dashboard.js?v=9"></script>
+  <script src="/static/js/dashboard.js?v=12"></script>
   <script src="/static/js/settings.js?v=2"></script>
 </body>
 </html>

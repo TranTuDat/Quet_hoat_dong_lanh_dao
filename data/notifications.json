@@ -536,6 +536,69 @@
         "Confidence": 100,
         "Target_Name": "Tô Lâm"
       }
+    },
+    {
+      "timestamp": "2026-05-19T14:22:32",
+      "target_name": "Lê Minh Hưng",
+      "target_position": "Thủ tướng Chính phủ",
+      "title": "Thủ tướng Lê Minh Hưng: Khoa học công nghệ là 'chìa khóa vàng' để hiện thực hóa khát vọng phát triển đất nước - Báo và phát thanh, truyền hình Tây Ninh",
+      "description": "Thủ tướng Lê Minh Hưng: Khoa học công nghệ là 'chìa khóa vàng' để hiện thực hóa khát vọng phát triển đất nước  Báo và phát thanh, truyền hình Tây Ninh",
+      "url": "https://news.google.com/rss/articles/CBMiygFBVV95cUxNTWw4NlI2clZlUjZGeVRrbjdsM2U5akdmQVI4X204bWhLd2lXNktoXzlxRzZCMG9ZbE9xUXY2RUNWZEctTTF6M1haRGZaYVI2NjhPWmxwb0JvcV9kTGNpS2xIcnJrc1BNMzFORlVINGVCZnRrQ3V3NzMtNnZfQUhPNVJpT1VGTDIyX2oxUFloT1BRbE5XcVZaSGE0ZFhwMFBYVk9LUFBlc3JQaDdmSFFHX1gzeE9mQTBmUkJOeDBTYXh1bnlkWFljby1B?oc=5&hl=en-US&gl=US&ceid=US:en",
+      "published": "Mon, 18 May 2026 19:00:00 GMT",
+      "news_kind": "hoatdong",
+      "resolved_url": "https://baotayninh.vn/thu-tuong-le-minh-hung-khoa-hoc-cong-nghe-la-chia-khoa-vang-de-hien-thuc-hoa-phat-trien-dat-nuoc-146858.html",
+      "press_name": "",
+      "press_domain": "baotayninh.vn",
+      "ai_result": {
+        "Is_Activity": true,
+        "Is_Change": false,
+        "Matched_Target": true,
+        "Summary": "Lê Minh Hưng: không thay đổi chức vụ, Thủ tướng Chính phủ.",
+        "Confidence": 100,
+        "Target_Name": "Lê Minh Hưng"
+      }
+    },
+    {
+      "timestamp": "2026-05-19T14:26:37",
+      "target_name": "Giá vàng",
+      "target_position": "",
+      "title": "Giá vàng hôm nay (chiều 26-4): Đi ngang - Baolangson.vn",
+      "description": "Giá vàng hôm nay (chiều 26-4): Đi ngang  Baolangson.vn",
+      "url": "https://news.google.com/rss/articles/CBMie0FVX3lxTE5oWEtrcm5PaWRrQnJISkZkY3RuVVJhSVJUbDBmNl9zV0hJMG5KLVBybUp4UjVSQ2VqUUM1QlR3YzN6WVFQTGlpdlMzNGltT240akEyX3paOFA2UXJGMkFXZ3ZOYjBNekhVZ3JibnJ0a3VZYXhiZXV1NFZOcw?oc=5&hl=en-US&gl=US&ceid=US:en",
+      "published": "Tue, 19 May 2026 00:35:39 GMT",
+      "news_kind": "hoatdong",
+      "resolved_url": "https://baolangson.vn/gia-vang-hom-nay-chieu-26-4-di-ngang-5089614.html",
+      "press_name": "",
+      "press_domain": "baolangson.vn",
+      "ai_result": {
+        "Is_Activity": true,
+        "Is_Change": false,
+        "Matched_Target": true,
+        "Summary": "Giá vàng: không thay đổi chức vụ, chức vụ.",
+        "Confidence": 100,
+        "Target_Name": "Giá vàng"
+      }
+    },
+    {
+      "timestamp": "2026-05-19T14:30:09",
+      "target_name": "Tô Lâm",
+      "target_position": "Tổng bí thư",
+      "title": "Tổng Bí thư, Chủ tịch nước Tô Lâm và đoàn đại biểu cấp cao Việt Nam kết thúc tốt đẹp chuyến thăm cấp Nhà nước đến Trung Quốc - Baolangson.vn",
+      "description": "Tổng Bí thư, Chủ tịch nước Tô Lâm và đoàn đại biểu cấp cao Việt Nam kết thúc tốt đẹp chuyến thăm cấp Nhà nước đến Trung Quốc  Baolangson.vn",
+      "url": "https://news.google.com/rss/articles/CBMi6wFBVV95cUxOUG5iaU4tODdBSVhTQ05ER1pMNjdGaFVmZ0lTYXJIZk93OGFkaEY4Q0UzMXlxcGtxTmRCWnJsNXV4RG95SFM4Y3l3aE0tOUVvNGs1X2h2dHJRSkNhUG01a0l3NzBBM1VpOGFxM0xPdTJjM0YtWFZQQ0pPcXJHdF9ud2txeWwySEMtWlpsQW5LbHJlcnZTWXo0bHltZ0VMZmFCdVI3UkxhTjk0UHRQRlVDOExaZEJUZ1BWc01NeHNLTTVoNzljQ01jN1pOLS1MblVnNTFBX2hBREkzTG5ycVFoV2ZFZlJadnczZGY0?oc=5&hl=en-US&gl=US&ceid=US:en",
+      "published": "Mon, 18 May 2026 17:46:41 GMT",
+      "news_kind": "hoatdong",
+      "resolved_url": "https://baolangson.vn/tong-bi-thu-chu-tich-nuoc-to-lam-cung-phu-nhan-va-doan-cong-tac-ket-thuc-tot-dep-chuyen-tham-cap-nha-nuoc-den-trung-quoc-5088294.html",
+      "press_name": "",
+      "press_domain": "baolangson.vn",
+      "ai_result": {
+        "Is_Activity": true,
+        "Is_Change": false,
+        "Matched_Target": true,
+        "Summary": "Tô Lâm: không thay đổi chức vụ, Tổng bí thư.",
+        "Confidence": 95,
+        "Target_Name": "Tô Lâm"
+      }
     }
   ]
 }

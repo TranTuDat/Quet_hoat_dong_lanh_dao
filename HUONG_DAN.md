@@ -14,7 +14,7 @@ Tài liệu mô tả toàn bộ cách cài đặt, sử dụng, cấu trúc thư
 - Hiển thị **bảng điều khiển** (dashboard) theo khung thời gian (giờ)
 - Gửi **báo cáo Telegram** sau mỗi lần quét (tùy chọn): có hoạt động / biến động thì báo chi tiết; không có gì trong cửa sổ báo cáo thì vẫn gửi tin *trống* để biết đã quét
 
-**Quét tự động nền** theo chu kỳ (`auto_scan_enabled`, `scan_interval_minutes`) — dashboard tự làm mới khi có lượt quét mới. Vẫn có thể bấm **Quét** để quét ngay.
+**Quét tự động nền** theo chu kỳ (`auto_scan_enabled`, `scan_interval_minutes`) — dashboard tự làm mới khi có lượt quét mới. Có thể **Quét tất cả** hoặc **Quét riêng** từng đối tượng. Giao diện hỗ trợ **sáng / tối** (lưu trên trình duyệt).
 
 ---
 
@@ -48,7 +48,7 @@ flowchart LR
 
 **Một lần quét (`process_once`):**
 
-1. Đọc danh sách đối tượng từ `config/config.json`
+1. Đọc danh sách đối tượng từ `config/config.json` (hoặc **một đối tượng** nếu quét riêng)
 2. Với mỗi đối tượng: tìm tin trên Google News (2 truy vấn: hoạt động + từ khóa chức vụ)
 3. Giải mã link Google News → link báo thật
 4. (Tùy chọn) Lọc chỉ báo trong `Chinh_thong.json`
@@ -81,6 +81,7 @@ Phan_mem/
 ├── src/                     # Mã nguồn Python
 │   ├── web.py               # Flask: giao diện + REST API
 │   ├── monitor.py           # Quét tin, AI, lưu, Telegram
+│   ├── auto_scanner.py      # Quét nền theo chu kỳ
 │   ├── telegram_notify.py   # Gửi tin nhắn Telegram
 │   ├── press_whitelist.py   # Lọc domain báo
 │   ├── json_io.py           # Đọc/ghi JSON an toàn
@@ -94,7 +95,8 @@ Phan_mem/
 │   ├── css/isr-theme.css
 │   └── js/
 │       ├── dashboard.js
-│       └── settings.js
+│       ├── settings.js
+│       └── theme.js         # Giao diện sáng / tối (localStorage)
 │
 └── emip.v3.js               # (Tùy chọn) Script Qime/Telegram riêng — KHÔNG gắn vào hệ thống này
 ```
@@ -145,19 +147,38 @@ Dừng server: `Ctrl+C` trong terminal.
 
 ### 5.1. Trang chính (Dashboard)
 
-|         Thành phần     |                                      Chức năng                                     |
-|------------------------|------------------------------------------------------------------------------------|
+| Thành phần | Chức năng |
+|------------|-----------|
+| **Giao diện sáng / tối** | Nút ngay **dưới Cài đặt hệ thống** (sidebar trái); chỉ đổi màu, giữ bố cục; lưu trên trình duyệt (`localStorage`, key `ui-theme`) |
 | **Thời gian tìm kiếm** | Số giờ hiển thị báo cáo (ưu tiên giá trị trên UI, không ghi đè bởi config khi xem) |
-| **Đối tượng**          | Thêm / sửa / xóa tên và chức vụ                                                    |
-| **Quét**               | Chạy một vòng quét Google News + AI cho tất cả đối tượng                           |
-| **Tải lại**            | Làm mới danh sách thẻ tóm tắt                                                      |
-| **Cài đặt hệ thống**   | Lọc báo, Telegram, danh sách báo chính thống                                       |
+| **Đối tượng** | Thêm / sửa / xóa tên và chức vụ; nút ▶ **Quét riêng** trên từng dòng |
+| **Quét tất cả** | Quét Google News + AI cho **toàn bộ** đối tượng (nút xanh góc phải header) |
+| **Quét riêng** | Chỉ quét **một** đối tượng: nút ▶ trên sidebar, nút **Quét riêng** trên thẻ kết quả, hoặc trang chi tiết |
+| **Tải lại** | Làm mới danh sách thẻ tóm tắt |
+| **Cài đặt hệ thống** | Lọc báo, quét tự động, Telegram, danh sách báo chính thống |
+
+**Cột phải dashboard**
+
+| Panel | Nội dung |
+|-------|----------|
+| **Trạng thái hệ thống** | KPI (Đối tượng / Biến động / Có hoạt động), quét tự động, chu kỳ, trạng thái, **Lần quét cuối** (thời điểm cụ thể `dd/mm/yyyy, hh:mm:ss`), Telegram |
+| **Tin mới nhất** | Danh sách tin gần đây trong cửa sổ giờ đã chọn |
+
+**Thẻ kết quả quét:** tóm tắt theo đối tượng (hoạt động / chức vụ, trạng thái, snippet); không hiển thị thời gian dạng “X phút trước”.
 
 **Sửa đối tượng:** chọn tên trong danh sách → sửa ô Họ tên / Chức vụ → **Thêm** (nút đổi thành lưu) hoặc **Hủy**.
 
-**Xem chi tiết:** bấm vào thẻ đối tượng → trang `/target?name=...` với hai mục **Hoạt động** và **Chức vụ**, có nút tải JSON.
+**Xem chi tiết:** bấm vào thẻ đối tượng hoặc mũi tên → trang `/target?name=...` với hai mục **Hoạt động** và **Chức vụ**, nút **Quét riêng** và tải JSON.
 
-### 5.2. Cài đặt hệ thống
+### 5.2. Trang chi tiết đối tượng
+
+| Thành phần | Chức năng |
+|------------|-----------|
+| **Quét riêng** | Quét chỉ đối tượng đang xem (dùng `hours` trên URL) |
+| **Giao diện sáng / tối** | Nút trên thanh trên cùng |
+| **Tải JSON** | Xuất dữ liệu trong cửa sổ giờ |
+
+### 5.3. Cài đặt hệ thống
 
 **Lọc khi quét**
 
@@ -167,6 +188,15 @@ Dừng server: `Ctrl+C` trong terminal.
 | Gộp tin trùng | Tắt | Tính năng nâng cao (hiện tắt trong config) |
 | Phân cụm sự kiện (AI) | Tắt | Model nặng, chậm |
 | Số tin tối đa / đối tượng | 15–35 | Giới hạn mỗi truy vấn GNews |
+| Quét RSS báo chính thống | Bật | Link trực tiếp từ feed, nhanh hơn decode Google News |
+
+**Quét tự động (real-time)**
+
+| Tùy chọn | Ý nghĩa |
+|----------|---------|
+| Bật quét nền | Tự quét theo chu kỳ khi server đang chạy |
+| Chu kỳ quét (phút) | Tối thiểu 5 phút |
+| Làm mới giao diện (giây) | Dashboard poll `/api/monitor/status` và tải lại khi có quét mới |
 
 **Thông báo Telegram**
 
@@ -192,12 +222,15 @@ Ví dụ cấu trúc (dùng placeholder, không copy key thật vào tài liệu
 {
   "gemini_api_key": "YOUR_GEMINI_API_KEY",
   "gemini_model": "gemini-2.5-flash",
-  "scan_interval_minutes": 60,
+  "auto_scan_enabled": true,
+  "scan_interval_minutes": 15,
+  "ui_refresh_seconds": 30,
   "google_news": {
     "language": "vi",
     "country": "VN",
     "max_results_per_target": 15,
     "filter_chinh_thong_only": true,
+    "use_rss_feeds": true,
     "activity_report_hours": 24,
     "role_change_report_hours": 168,
     "merge_duplicate_articles": false,
@@ -217,6 +250,9 @@ Ví dụ cấu trúc (dùng placeholder, không copy key thật vào tài liệu
 
 | Khối / trường | Ghi chú |
 |---------------|---------|
+| `auto_scan_enabled` | Bật/tắt quét nền (có thể đổi trên UI) |
+| `scan_interval_minutes` | Chu kỳ quét nền (phút, tối thiểu 5) |
+| `ui_refresh_seconds` | Tần suất dashboard kiểm tra quét mới (10–120 giây) |
 | `activity_report_hours` | Chỉ dùng khi UI **không** truyền `hours` (fallback) |
 | `role_change_report_hours` | Cửa sổ riêng cho kênh chức vụ khi xem báo cáo |
 | `telegram` | Lưu khi bấm **Lưu cài đặt** trên UI |
@@ -428,7 +464,7 @@ Base: `http://localhost:8000`
 | POST | `/api/settings` | Lưu cài đặt |
 | POST | `/api/settings/telegram-test` | Gửi tin thử Telegram |
 | GET | `/api/monitor/status` | Trạng thái quét tự động (đang quét, lần cuối, lần tới) |
-| POST | `/monitor/run` | Chạy quét một lần (thủ công) |
+| POST | `/monitor/run` | Chạy quét một lần (thủ công). Body JSON: `{ "scan_hours": 24, "target_name": "Tên (tùy chọn)" }` — bỏ `target_name` = quét tất cả |
 
 Phản hồi quét thành công (rút gọn):
 
@@ -436,6 +472,8 @@ Phản hồi quét thành công (rút gọn):
 {
   "success": true,
   "processed_new": 0,
+  "scanned_target": "Tô Lâm",
+  "scanned_targets": ["Tô Lâm"],
   "telegram_sent": 2,
   "telegram_sent_empty": 2,
   "telegram_skipped_dup": 0,
@@ -451,9 +489,19 @@ Phản hồi quét thành công (rút gọn):
 | Trường | Ý nghĩa |
 |--------|---------|
 | `processed_new` | Số bài **mới** lưu trong lần quét này |
+| `scanned_target` | Tên đối tượng khi quét riêng; `null` khi quét tất cả |
+| `scanned_targets` | Danh sách đối tượng thực sự được quét |
 | `telegram_sent` | Số tin Telegram đã gửi (trống + đầy đủ) |
 | `telegram_sent_empty` | Trong đó bao nhiêu tin **trống** |
 | `skipped_history_dup` | URL bỏ qua vì đã có trong `history.json` |
+
+**Ví dụ quét riêng (curl):**
+
+```bash
+curl -X POST http://localhost:8000/monitor/run ^
+  -H "Content-Type: application/json" ^
+  -d "{\"scan_hours\": 24, \"target_name\": \"Tô Lâm\"}"
+```
 
 ---
 
@@ -463,7 +511,8 @@ Phản hồi quét thành công (rút gọn):
 |--------------------------|------------------------------------------------------|
 | `He_thong.py`            | Khởi chạy Flask `0.0.0.0:8000`                       |
 | `src/web.py`             | Route, API, render HTML                              |
-| `src/monitor.py`         | `process_once()`, Gemini, GNews, báo cáo             |
+| `src/auto_scanner.py`    | Vòng lặp quét nền, khóa tránh quét chồng, `/api/monitor/status` |
+| `src/monitor.py`         | `process_once()`, Gemini, GNews, RSS, báo cáo        |
 | `src/telegram_notify.py` | `format_target_digest`, `format_target_empty`, `notify_records` |
 | `src/press_whitelist.py` | `PressWhitelist.from_file`, `is_allowed_url`         |
 | `src/json_io.py`         | `read_json` / `write_json` (file `.tmp` rồi replace) |
@@ -481,8 +530,9 @@ python -m src.monitor
 
 - **Không** chia sẻ `config/config.json` (chứa API key Gemini, token Telegram).
 - **Không** commit file config có key thật lên Git công khai.
-- Sau khi sửa code Python: **khởi động lại** `python He_thong.py`.
-- Sau khi sửa JS/CSS: **Ctrl+F5** trên trình duyệt.
+- Sau khi sửa code Python: **khởi động lại** `python He_thong.py` (chỉ chạy **một** tiến trình trên cổng 8000).
+- Sau khi sửa HTML/JS/CSS: **Ctrl+F5** trên trình duyệt (template có tham số `?v=` để bust cache).
+- Giao diện sáng/tối: file `static/js/theme.js`, CSS block `html[data-theme="light"]` trong `isr-theme.css`.
 - File `emip.v3.js` (nếu có) là script **Qime/Telegram riêng** trên trình duyệt; hệ thống giám sát **không đọc** file đó — cấu hình Telegram hoàn toàn qua UI/`config.json`.
 
 ---
@@ -497,6 +547,10 @@ python -m src.monitor
 | Chỉ thấy `[SCAN]`, không `[ARTICLE]` | Không có URL mới — xem `telegram_sent_empty` trong phản hồi quét |
 | Quét không có tin      | Tăng `max_results_per_target`; tắt tạm lọc báo chính thống để thử |
 | UI vẫn 24h dù chọn 1h  | Khởi động lại server; Ctrl+F5; kiểm tra đã bấm ✓ áp dụng giờ      |
+| UI cũ (không thấy nút mới) | Nhiều server trùng cổng 8000 — dừng hết (`Ctrl+C`), chạy lại **một** lần `python He_thong.py`; Ctrl+F5 |
+| Không thấy **Giao diện sáng** | Nút ở sidebar, **dưới Cài đặt hệ thống**; Ctrl+F5 hoặc tab ẩn danh |
+| Quét riêng báo lỗi đối tượng | Tên `target_name` phải khớp chính xác với `config.json` |
+| Quét tự động dừng sau 1 lần | Windows lỗi in tiếng Việt (`charmap`) làm thread nền chết — khởi động lại server (bản mới đã sửa); xem `last_scan_ok` / `last_error` tại `/api/monitor/status` |
 | Lưu đối tượng lỗi 404  | Khởi động lại server sau khi cập nhật code                        |
 | Gemini 429             | Hết quota; đợi hoặc đổi model/key                                 |
 | Telegram 400           | Xem mục 8.4                                                       |
@@ -514,4 +568,4 @@ Nếu trước đây có `config.json`, `notifications.json` ngay trong `Phan_me
 
 ---
 
-*Tài liệu cập nhật: Telegram báo cáo theo đối tượng, tin trống khi quét lại không có hoạt động/biến động trong cửa sổ báo cáo.*
+*Tài liệu cập nhật: quét riêng từng đối tượng, giao diện sáng/tối, dashboard (Trạng thái hệ thống + Tin mới nhất), quét tự động nền, Telegram báo cáo theo đối tượng.*
