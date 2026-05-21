@@ -44,6 +44,17 @@ function flashStatus(msg, ok = true) {
   statusLine.classList.toggle("live", ok);
 }
 
+function updateTargetScopeMeta(targetCount, hours) {
+  const el = document.getElementById("targetScopeMeta");
+  if (!el) return;
+  const n = Number(targetCount);
+  const h = Number(hours);
+  const nLabel = Number.isFinite(n) && n >= 0 ? `${n} đối tượng` : "— đối tượng";
+  const hLabel =
+    Number.isFinite(h) && h > 0 ? `hiển thị ${h} giờ gần nhất` : "hiển thị — giờ gần nhất";
+  el.textContent = `${nLabel} · ${hLabel}`;
+}
+
 function setEditMode(originalName, displayName, position, idx) {
   window.__EDITING_TARGET__ = originalName || null;
   const hint = document.getElementById("editHint");
@@ -98,6 +109,119 @@ function initials(name) {
   if (!p.length) return "?";
   if (p.length === 1) return p[0].slice(0, 2).toUpperCase();
   return (p[0][0] + p[p.length - 1][0]).toUpperCase();
+}
+
+function normalizeSearchText(s) {
+  return String(s ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function getTargetSearchQuery() {
+  return normalizeSearchText(document.getElementById("targetSearchInput")?.value);
+}
+
+function positionForTargetName(name) {
+  const n = String(name || "").trim();
+  const hit = (cfgTargets() || []).find((t) => String(t?.name || "").trim() === n);
+  return String(hit?.position || "").trim();
+}
+
+function matchesTargetSearch(name, position, snippet, q) {
+  if (!q) return true;
+  const n = normalizeSearchText(name);
+  const p = normalizeSearchText(position);
+  const s = normalizeSearchText(snippet);
+  return n.includes(q) || p.includes(q) || s.includes(q);
+}
+
+function applyTargetSearch() {
+  const q = getTargetSearchQuery();
+  const clearBtn = document.getElementById("targetSearchClear");
+  const hint = document.getElementById("targetSearchHint");
+  if (clearBtn) clearBtn.hidden = !q;
+
+  let visTargets = 0;
+  let totalTargets = 0;
+  document.querySelectorAll("#targetsList .t-item").forEach((el) => {
+    totalTargets += 1;
+    const name = el.querySelector(".t-name")?.textContent || "";
+    const pos = el.querySelector(".t-pos")?.textContent || "";
+    const ok = matchesTargetSearch(name, pos, "", q);
+    el.classList.toggle("is-filtered-out", !ok);
+    if (ok) visTargets += 1;
+  });
+
+  const targetsEmpty = document.getElementById("targetsFilterEmpty");
+  if (targetsEmpty) {
+    targetsEmpty.hidden = !q || visTargets > 0 || totalTargets === 0;
+  }
+
+  let visCards = 0;
+  let totalCards = 0;
+  document.querySelectorAll("#summariesList .activity-card").forEach((el) => {
+    totalCards += 1;
+    const name = el.dataset.targetName || "";
+    const pos = el.dataset.targetPosition || "";
+    const snippet = el.dataset.targetSnippet || "";
+    const ok = matchesTargetSearch(name, pos, snippet, q);
+    el.classList.toggle("is-filtered-out", !ok);
+    if (ok) visCards += 1;
+  });
+
+  const sumEmpty = document.getElementById("summariesFilterEmpty");
+  if (sumEmpty) {
+    sumEmpty.hidden = !q || visCards > 0 || totalCards === 0;
+  }
+
+  document.querySelectorAll("#recentFeedBody .feed-item").forEach((el) => {
+    const name = el.dataset.targetName || "";
+    const pos = positionForTargetName(name);
+    const snippet = el.querySelector(".fi-meta")?.textContent || "";
+    const ok = matchesTargetSearch(name, pos, snippet, q);
+    el.classList.toggle("is-filtered-out", !ok);
+  });
+
+  if (hint) {
+    if (!q) {
+      hint.hidden = true;
+      hint.textContent = "";
+    } else {
+      hint.hidden = false;
+      const parts = [];
+      if (visTargets !== totalTargets) parts.push(`${visTargets}/${totalTargets} ĐT`);
+      if (totalCards && visCards !== totalCards) parts.push(`${visCards}/${totalCards} thẻ`);
+      hint.textContent = parts.length ? parts.join(" · ") : "0 kết quả";
+    }
+  }
+}
+
+function initTargetSearch() {
+  const inp = document.getElementById("targetSearchInput");
+  const clearBtn = document.getElementById("targetSearchClear");
+  if (!inp) return;
+
+  let debounce = null;
+  const refresh = () => applyTargetSearch();
+
+  inp.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(refresh, 120);
+  });
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      inp.value = "";
+      refresh();
+      inp.blur();
+    }
+  });
+  clearBtn?.addEventListener("click", () => {
+    inp.value = "";
+    inp.focus();
+    refresh();
+  });
 }
 
 function parseHoursRange() {
@@ -173,6 +297,8 @@ function renderTargets(cfg) {
       encodeURIComponent(String(hours));
     const div = document.createElement("div");
     div.className = "t-item";
+    div.dataset.targetName = name;
+    div.dataset.targetPosition = pos;
     div.innerHTML = `
       <div class="avatar">${escapeHtml(initials(name))}</div>
       <div>
@@ -204,10 +330,12 @@ function renderTargets(cfg) {
   targetsList.querySelectorAll("button[data-scan-target]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (isScanLocked()) return;
       const name = btn.getAttribute("data-scan-target") || "";
       if (name) runMonitorScan({ targetName: name });
     });
   });
+  applyScanLockUi();
   targetsList.querySelectorAll("button[data-del]").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -225,6 +353,7 @@ function renderTargets(cfg) {
     });
   });
   if (window.lucide) lucide.createIcons();
+  applyTargetSearch();
 }
 
 function renderSummaries(summaries) {
@@ -247,15 +376,20 @@ function renderSummaries(summaries) {
     const nHd = s.activity_count ?? 0;
     const nCv = s.change_count ?? 0;
     const snippet = (s.headline || s.digest_short || "").trim().split("\n")[0];
+    const pos = positionForTargetName(name);
     const card = document.createElement("article");
     card.className = "activity-card";
     card.dataset.status = s.status || "";
+    card.dataset.targetName = name;
+    card.dataset.targetPosition = pos;
+    card.dataset.targetSnippet = snippet;
     card.innerHTML = `
       <div class="card-glow"></div>
       <div class="card-inner">
         <div class="card-top">
           <div class="card-title-area">
             <h3>${escapeHtml(name)}</h3>
+            ${pos ? `<p class="card-sub-pos">${escapeHtml(pos)}</p>` : ""}
           </div>
           <span class="${statusChipClass(s.status)}">${escapeHtml(statusLabel(s.status))}</span>
         </div>
@@ -281,12 +415,15 @@ function renderSummaries(summaries) {
 
     card.querySelector("button[data-scan-target]")?.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (isScanLocked()) return;
       runMonitorScan({ targetName: name });
     });
 
     summariesList.appendChild(card);
   });
+  applyScanLockUi();
   if (window.lucide) lucide.createIcons();
+  applyTargetSearch();
 }
 
 function parseRecordTime(iso) {
@@ -305,7 +442,8 @@ function buildRecentFeed(notifs, hours, limit = 10) {
   const cutoff = Date.now() - hours * 3600000;
   const seen = new Set();
   const rows = [];
-  for (const ch of ["channel_hoatdong", "channel_biendong"]) {
+  // Trùng URL: ưu tiên kênh biến động (giống quét GNews — biendong thắng hoatdong)
+  for (const ch of ["channel_biendong", "channel_hoatdong"]) {
     for (const r of notifs?.[ch] || []) {
       if (!r || typeof r !== "object") continue;
       const ts = parseRecordTime(r.timestamp);
@@ -364,6 +502,8 @@ function renderSystemPanel(st, settings) {
   el.innerHTML =
     renderKpiRow(window.__LAST_SUMMARIES__ || []) +
     `
+    <div class="sys-row"><span class="lbl">Chế độ quét</span><span class="val ok">${escapeHtml(st?.ai_scan_mode_label || settings?.ai_scan_mode_label || "—")}</span></div>
+    <div class="sys-row"><span class="lbl">Áp dụng</span><span class="val">Quét thủ công + quét tự động (config)</span></div>
     <div class="sys-row"><span class="lbl">Quét tự động</span><span class="val ${autoOn ? "ok" : ""}">${autoOn ? "Bật" : "Tắt"}</span></div>
     <div class="sys-row"><span class="lbl">Chu kỳ</span><span class="val">${intervalMin} phút</span></div>
     <div class="sys-row"><span class="lbl">Trạng thái</span><span class="val ${scanning ? "busy" : st?.last_scan_ok === false ? "warn" : "ok"}">${scanning ? "Đang quét" : st?.last_scan_ok === false ? "Lỗi" : "Chờ"}</span></div>
@@ -392,10 +532,12 @@ function renderRecentFeed(notifs, hours) {
       const summary = String(ai.Summary || "").trim();
       const press = r.press_name || "";
       const when = formatTimeline(r.timestamp) || "";
-      const kind =
-        r._channel === "channel_biendong" ? "Chức vụ" : "Hoạt động";
+      const isRole =
+        r._channel === "channel_biendong" ||
+        (ai.Is_Change && ai.Matched_Target);
+      const kind = isRole ? "Biến động chức vụ" : "Hoạt động";
       return `
-        <article class="feed-item">
+        <article class="feed-item" data-target-name="${escapeHtml(name)}">
           <div class="fi-top">
             <span class="fi-target">${escapeHtml(name)}</span>
             <span class="fi-time">${escapeHtml(when)}${when ? " · " : ""}${escapeHtml(kind)}</span>
@@ -405,28 +547,33 @@ function renderRecentFeed(notifs, hours) {
         </article>`;
     })
     .join("");
+  applyTargetSearch();
 }
 
 async function loadAll() {
   flashStatus("Đang tải…", false);
   const hours = parseHoursRange();
-  const [cfgRes, sumRes, notifRes, settingsRes, statusRes] = await Promise.all([
-    fetch("/config"),
+  const [tgtRes, sumRes, notifRes, settingsRes, statusRes] = await Promise.all([
+    fetch("/api/targets"),
     fetch("/api/targets/summary?hours=" + encodeURIComponent(String(hours))),
     fetch("/notifications"),
     fetch("/api/settings"),
     fetch("/api/monitor/status"),
   ]);
-  const cfg = await cfgRes.json();
+  const cfg = await tgtRes.json();
   const sumData = await sumRes.json();
   const notifData = await notifRes.json();
   const settingsData = await settingsRes.json();
   const statusData = await statusRes.json();
-  if (cfg.success === false) throw new Error(cfg.error || "Lỗi tải cấu hình");
+  if (statusData.success !== false) {
+    setServerScanning(!!(statusData.status || {}).is_scanning);
+  }
+  if (cfg.success === false) throw new Error(cfg.error || "Lỗi tải đối tượng");
   if (sumData.success === false) throw new Error(sumData.error || "Lỗi tải tín hiệu");
-  window.__CFG_TARGETS__ = cfg.config.targets || [];
+  const targetList = { targets: cfg.targets || [] };
+  window.__CFG_TARGETS__ = targetList.targets;
   window.__LAST_SUMMARIES__ = sumData.summaries || [];
-  renderTargets(cfg.config);
+  renderTargets(targetList);
   renderSummaries(window.__LAST_SUMMARIES__);
   const notifs = notifData.notifications || {};
   const settings = settingsData.settings || {};
@@ -435,27 +582,83 @@ async function loadAll() {
   renderRecentFeed(notifs, hours);
   if (window.lucide) lucide.createIcons();
   if (window.initTheme) initTheme();
-  const n = (cfg.config.targets || []).length;
+  const n = (cfg.targets || []).length;
   const applied =
     sumData.hours_requested != null ? sumData.hours_requested : hours;
-  flashStatus(`${n} đối tượng · hiển thị ${applied} giờ gần nhất`, true);
+  updateTargetScopeMeta(n, applied);
+  if (!isScanLocked()) {
+    flashStatus("Đã cập nhật", true);
+  }
 }
 
 let lastKnownScanAt = null;
 let uiRefreshTimer = null;
 let scanBusy = false;
+let serverScanning = false;
+
+function isScanLocked() {
+  return scanBusy || serverScanning;
+}
+
+function applyScanLockUi() {
+  const locked = isScanLocked();
+  document.body.classList.toggle("scan-in-progress", locked);
+
+  const btnRunNow = document.getElementById("btnRunNow");
+  const runSpinner = document.getElementById("runSpinner");
+  if (btnRunNow) {
+    btnRunNow.disabled = locked;
+    btnRunNow.title = locked
+      ? serverScanning
+        ? "Đang quét — vui lòng đợi"
+        : "Đang gửi yêu cầu quét…"
+      : "Quét tất cả đối tượng trong danh sách";
+  }
+  if (runSpinner) {
+    runSpinner.style.display = locked ? "inline-block" : "none";
+  }
+
+  document.querySelectorAll("[data-scan-target], .btn-scan-target").forEach((btn) => {
+    btn.disabled = locked;
+    btn.title = locked
+      ? "Đang quét — vui lòng đợi"
+      : "Quét riêng đối tượng này (không quét các đối tượng khác)";
+    btn.classList.remove("scanning");
+  });
+}
+
+function setServerScanning(active) {
+  serverScanning = !!active;
+  applyScanLockUi();
+}
 
 function formatScanResultMessage(data, targetName) {
   const who = targetName ? ` · ${targetName}` : "";
   let msg = `Đã thêm ${data.processed_new || 0} tin${who}`;
+  if (data.scan_ai_mode_label) {
+    msg += " · " + data.scan_ai_mode_label;
+  } else if (data.scan_use_ai === false) {
+    msg += " · không dùng Gemini";
+  }
   if (data.skipped_history_dup > 0) {
-    msg += ` · bỏ qua ${data.skipped_history_dup} tin trùng (đã quét)`;
+    msg += ` · bỏ qua ${data.skipped_history_dup} tin đã lưu/trùng`;
+  }
+  if (data.skipped_whitelist > 0) {
+    msg += ` · ${data.skipped_whitelist} bài ngoài báo chính thống`;
+  }
+  if (
+    (data.processed_new || 0) === 0 &&
+    data.scan_use_ai === false &&
+    (data.skipped_history_dup || 0) === 0 &&
+    (data.skipped_whitelist || 0) === 0
+  ) {
+    msg += " · không có bài mới từ Google News/RSS (thử tắt «Chỉ báo chính thống» trên hiển thị hoặc quét lại sau)";
   }
   if (data.telegram_enabled) {
     if (data.telegram_sent > 0) {
-      msg += ` · Telegram: ${data.telegram_sent} tin`;
+      msg += ` · Telegram: ${data.telegram_sent} tin nhắn`;
       if (data.telegram_sent_empty > 0) {
-        msg += ` (${data.telegram_sent_empty} trống)`;
+        msg += ` (${data.telegram_sent_empty} đối tượng trống)`;
       }
     } else if (data.processed_new > 0 && data.telegram_errors?.length) {
       msg += ` · Telegram lỗi: ${data.telegram_errors[0]}`;
@@ -475,34 +678,55 @@ function formatScanResultMessage(data, targetName) {
   return msg;
 }
 
-function setScanUiBusy(busy, targetName) {
-  const btnRunNow = document.getElementById("btnRunNow");
-  const runSpinner = document.getElementById("runSpinner");
-  if (btnRunNow) btnRunNow.disabled = busy;
-  if (runSpinner) {
-    runSpinner.style.display = busy && !targetName ? "inline-block" : "none";
+async function waitForScanComplete(maxMs = 900000) {
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    const res = await fetch("/api/monitor/status");
+    const data = await res.json();
+    const st = data.status || {};
+    setServerScanning(!!st.is_scanning);
+    if (!st.is_scanning) return st;
+    await new Promise((r) => setTimeout(r, 1500));
   }
-  document.querySelectorAll("[data-scan-target]").forEach((btn) => {
-    btn.disabled = busy;
-    const isThis = targetName && btn.getAttribute("data-scan-target") === targetName;
-    btn.classList.toggle("scanning", busy && isThis);
-  });
+  throw new Error("Quét quá lâu — xem log trong cửa sổ python He_thong.py");
+}
+
+function formatStatusScanMessage(st, targetName) {
+  const who = targetName ? ` · ${targetName}` : "";
+  const n = Number(st?.last_processed_new ?? 0);
+  let msg = `Đã quét xong${who} — +${n} tin`;
+  const label = st?.last_scan_summary?.scan_ai_mode_label;
+  if (label) msg += ` · ${label}`;
+  const tg = Number(st?.last_scan_summary?.telegram_sent ?? 0);
+  if (tg > 0) msg += ` · Telegram: ${tg} tin nhắn`;
+  if (st?.last_scan_ok === false && st?.last_error) {
+    msg += ` · Lỗi: ${st.last_error}`;
+  } else if (st?.last_warning) {
+    msg += ` · ${st.last_warning}`;
+  }
+  return msg;
 }
 
 async function runMonitorScan({ targetName = null } = {}) {
-  if (scanBusy) {
-    flashStatus("Đang quét — vui lòng đợi", false);
+  if (isScanLocked()) {
     return;
   }
   scanBusy = true;
-  setScanUiBusy(true, targetName);
+  applyScanLockUi();
   try {
     const label = targetName ? `Đang quét: ${targetName}…` : "Đang quét tất cả…";
     flashStatus(label, false);
     const hours = parseHoursRange();
-    const body = { scan_hours: hours };
+    const body = { scan_hours: hours, ignore_history: true };
     if (targetName) body.target_name = targetName;
     const data = await postJson("/monitor/run", body);
+    if (data.started) {
+      setServerScanning(true);
+      const st = await waitForScanComplete();
+      flashStatus(formatStatusScanMessage(st, targetName), st?.last_scan_ok !== false);
+      await loadAll();
+      return;
+    }
     flashStatus(formatScanResultMessage(data, targetName), true);
     await loadAll();
   } catch (e) {
@@ -510,11 +734,12 @@ async function runMonitorScan({ targetName = null } = {}) {
     alert(e?.message || String(e));
   } finally {
     scanBusy = false;
-    setScanUiBusy(false);
+    applyScanLockUi();
   }
 }
 
 window.runMonitorScan = runMonitorScan;
+window.isScanLocked = isScanLocked;
 
 function formatAutoScanStatus(st) {
   if (!st) return "—";
@@ -536,7 +761,8 @@ function formatAutoScanStatus(st) {
       parts.push(`Lần quét tiếp theo trong: ${mins} phút`);
     }
   }
-  parts.push(`Chu kỳ quét hiện tại: ${st.interval_minutes || "?"} phút/lần`);
+  parts.push(`Chu kỳ: ${st.interval_minutes || "?"} phút/lần`);
+  if (st.ai_scan_mode_label) parts.push(`Chế độ: ${st.ai_scan_mode_label}`);
   if (st.is_scanning) {
     return parts.filter((p) => !p.startsWith("Tiếp:")).join(" · ");
   }
@@ -549,6 +775,7 @@ async function pollMonitorStatus() {
     const data = await res.json();
     if (!data.success) return;
     const st = data.status || {};
+    setServerScanning(!!st.is_scanning);
     renderSystemPanel(st, window.__LAST_SETTINGS__ || {});
 
     const scanAt = st.last_scan_at || null;
@@ -572,29 +799,14 @@ function startLiveRefresh(seconds) {
   pollMonitorStatus();
 }
 
-async function applySettingsSaved() {
-  try {
-    const [settingsRes, statusRes] = await Promise.all([
-      fetch("/api/settings"),
-      fetch("/api/monitor/status"),
-    ]);
-    const settingsData = await settingsRes.json();
-    const statusData = await statusRes.json();
-    if (settingsData.success !== false) {
-      window.__LAST_SETTINGS__ = settingsData.settings || {};
-    }
-    if (statusData.success !== false) {
-      renderSystemPanel(statusData.status || {}, window.__LAST_SETTINGS__ || {});
-    }
-    const sec = window.__LAST_SETTINGS__?.ui_refresh_seconds ?? 30;
-    startLiveRefresh(sec);
-    if (window.lucide) lucide.createIcons();
-  } catch {
-    /* bỏ qua */
-  }
+async function refreshDashboardData() {
+  await loadAll();
+  const sec = window.__LAST_SETTINGS__?.ui_refresh_seconds ?? 30;
+  startLiveRefresh(sec);
 }
 
-window.applySettingsSaved = applySettingsSaved;
+window.refreshDashboardData = refreshDashboardData;
+window.applySettingsSaved = refreshDashboardData;
 
 function initDashboard() {
   const btnRunNow = document.getElementById("btnRunNow");
@@ -642,6 +854,8 @@ function initDashboard() {
   });
 
   function applyHoursFilter() {
+    const h = parseHoursRange();
+    updateTargetScopeMeta((cfgTargets() || []).length, h);
     loadAll().catch((e) => {
       flashStatus(e?.message || String(e), false);
     });
@@ -656,16 +870,12 @@ function initDashboard() {
   });
   document.getElementById("hoursRangeInput")?.addEventListener("change", applyHoursFilter);
 
+  initTargetSearch();
+
   loadAll()
-    .then(async () => {
-      try {
-        const res = await fetch("/api/settings");
-        const data = await res.json();
-        const sec = data.settings?.ui_refresh_seconds ?? 30;
-        startLiveRefresh(sec);
-      } catch {
-        startLiveRefresh(30);
-      }
+    .then(() => {
+      const sec = window.__LAST_SETTINGS__?.ui_refresh_seconds ?? 30;
+      startLiveRefresh(sec);
     })
     .catch((e) => {
       flashStatus(e?.message || String(e), false);

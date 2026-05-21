@@ -1,0 +1,229 @@
+%% Sơ đồ hoạt động — Phan_mem (bản màu, dễ đọc)
+%% PNG/PDF: npx @mermaid-js/mermaid-cli -i docs/so_do_he_thong.mmd -o docs/so_do_he_thong.png
+
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Segoe UI, Arial, sans-serif",
+    "fontSize": "14px",
+    "primaryColor": "#6366F1",
+    "primaryTextColor": "#FFFFFF",
+    "primaryBorderColor": "#4338CA",
+    "secondaryColor": "#22D3EE",
+    "secondaryTextColor": "#0F172A",
+    "secondaryBorderColor": "#0891B2",
+    "tertiaryColor": "#FBBF24",
+    "tertiaryTextColor": "#78350F",
+    "lineColor": "#94A3B8",
+    "textColor": "#1E293B",
+    "mainBkg": "#F8FAFC",
+    "nodeBorder": "#64748B",
+    "clusterBkg": "#F1F5F9",
+    "titleColor": "#0F172A",
+    "edgeLabelBackground": "#FFFFFF"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "htmlLabels": true,
+    "padding": 18,
+    "nodeSpacing": 45,
+    "rankSpacing": 55
+  }
+}}%%
+
+flowchart TB
+
+  START(["🚀 KHỞI ĐỘNG<br/><b>python He_thong.py</b><br/>migrate → Flask :8000"])
+  START --> WEB
+
+  WEB["🌐 Flask <b>src/web.py</b><br/>+ AutoScanner thread"]
+  WEB --> AUTOWAIT
+
+  subgraph CFGSTORE["📁 CẤU HÌNH & DỮ LIỆU"]
+    direction LR
+    CFG["⚙️ config.json<br/>targets · AI mode · Telegram"]
+    CHINH["📰 Chinh_thong.json<br/>domain · RSS"]
+    NOTIF[("📋 notifications.json<br/>hoatdong · biendong")]
+    HIST[("📜 history.json")]
+    DECCACHE[("🔗 url_decode_cache")]
+    TGSENT[("✈️ telegram_sent")]
+  end
+
+  subgraph UI["👤 NGƯỜI DÙNG — Trình duyệt"]
+    direction TB
+    DASH["📊 Dashboard<br/>KPI · Quét tất cả<br/><i>khóa khi đang quét</i>"]
+    DETAIL["🔍 Chi tiết đối tượng"]
+    SETMOD["⚙️ Cài đặt<br/>3 chế độ AI · báo · Telegram"]
+    API["🔌 REST API"]
+    POLL["🔄 Poll status"]
+    DASH --> API
+    DETAIL --> API
+    SETMOD --> API
+    API --> POLL --> DASH
+  end
+
+  WEB --> API
+  API --> CFG
+  API --> NOTIF
+
+  subgraph TRIGGER["⏱️ KÍCH HOẠT QUÉT"]
+    direction TB
+    AUTOWAIT{"Quét tự động<br/>bật?"}
+    SLEEP["💤 Chờ chu kỳ<br/>scan_interval"]
+    IDLE["⏸ Thread chờ"]
+    MANUAL["▶️ Quét thủ công<br/>POST /monitor/run<br/><i>409 nếu busy</i>"]
+    MODECHG["🔄 Đổi chế độ AI<br/>quét lại mode_change"]
+    SCAN["🔒 <b>process_once()</b><br/>is_scanning = true"]
+    AUTOWAIT -->|Có| SLEEP --> SCAN
+    AUTOWAIT -->|Không| IDLE
+    MANUAL --> SCAN
+    MODECHG --> SCAN
+  end
+
+  SCAN --> SYNC
+  SYNC["🎯 ensure_ai_scan_sync<br/>đọc ai_scan_mode"]
+  SYNC --> LOOP
+
+  LOOP["🔁 Lặp từng đối tượng"]
+  LOOP --> MODES
+  LOOP --> COLLECT
+
+  subgraph MODES["🤖 CHẾ ĐỘ AI"]
+    direction LR
+    M_KW["📝 <b>keyword</b><br/>không Gemini"]
+    M_ACT["✅ <b>activity</b><br/>Gemini + đúng tên"]
+    M_FULL["📌 <b>full</b><br/>+ biến động chức vụ"]
+  end
+
+  subgraph COLLECT["📡 THU THẬP TIN"]
+    direction TB
+    ROLE{"scan_role<br/>_change?"}
+    QHD["GNews · tên<br/>→ hoatdong"]
+    QBD["GNews · chức vụ<br/>→ biendong"]
+    MERGE["🔀 Gộp URL<br/>ưu tiên biendong"]
+    GN_SITE["GNews site:domain"]
+    GN_ALL["GNews tên thường"]
+    RSS["RSS báo"]
+    ROLE -->|activity| QHD --> MERGE
+    ROLE -->|full| QBD --> QHD2["GNews tên"] --> MERGE
+    PRESS{"Lọc báo<br/>chính thống?"}
+    MERGE --> PRESS
+    PRESS -->|Bật| GN_SITE --> MERGE
+    PRESS -->|Tắt| GN_ALL --> MERGE
+    RSSON{"RSS?"}
+    MERGE --> RSSON
+    RSSON -->|Có| RSS --> FILTIN
+    RSSON -->|Không| FILTIN
+  end
+
+  subgraph FILTERBLK["🧹 LỌC TRƯỚC AI"]
+    direction LR
+    FILTIN["Bỏ history / trùng<br/><i>ignore khi quét lại</i>"]
+    DECODE["Decode GNews<br/>+ cache"]
+    WL{"Domain<br/>báo?"}
+    FILTIN --> DECODE --> WL --> AIIN
+  end
+
+  subgraph AIBLK["🧠 PHÂN TÍCH & LƯU"]
+    direction TB
+    AIIN{"Dùng<br/>Gemini?"}
+    KW["Từ khóa<br/>lưu hết"]
+    GEM["Gemini API<br/>song song"]
+    PASS{"Đạt<br/>điều kiện?"}
+    SKIPHIST["Chỉ history"]
+    UPSERT["💾 Upsert URL"]
+    CHHD["channel_hoatdong"]
+    CHBDY["channel_biendong"]
+    AIIN -->|keyword| KW --> PASS
+    AIIN -->|AI| GEM --> PASS
+    PASS -->|Không| SKIPHIST --> MORE
+    PASS -->|Có| UPSERT --> CHHD --> MORE
+    UPSERT --> CHBDY --> MORE
+    MORE{{"Còn<br/>đối tượng?"}}
+    MORE -->|Có| LOOP
+    MORE -->|Hết| DISP
+  end
+
+  subgraph DISPLAYBLK["🖥️ HIỂN THỊ"]
+    DISP["filter_notifications<br/>theo ai_scan_mode + báo"]
+    DISP --> API
+  end
+
+  subgraph TELEGRAMBLK["✈️ TELEGRAM"]
+    TG{"Bật?"}
+    PACK["Digest HTML<br/>chia tin nếu dài"]
+    SEND["Gửi Bot API"]
+    TG -->|Không| DONE
+    TG -->|Có| PACK --> SEND --> DONE
+  end
+
+  DONE(["✔️ KẾT THÚC LƯỢT<br/>is_scanning = false"])
+  DONE --> SLEEP
+  DONE --> POLL
+
+  GNewsExt[("🌍 Google News")]
+  RSSExt[("📻 RSS feeds")]
+  GeminiExt[("✨ Gemini API")]
+  TgExt[("💬 Telegram")]
+
+  GNewsExt -.-> GN_SITE
+  GNewsExt -.-> GN_ALL
+  RSSExt -.-> RSS
+  GeminiExt -.-> GEM
+  TgExt -.-> SEND
+  CFG -.-> SYNC
+  CHINH -.-> GN_SITE
+  CHINH -.-> RSS
+  NOTIF -.-> UPSERT
+  NOTIF -.-> DISP
+  HIST -.-> FILTIN
+  DECCACHE -.-> DECODE
+  TGSENT -.-> SEND
+
+  %% --- Màu nút theo nhóm ---
+  classDef nodeStart fill:#7C3AED,stroke:#5B21B6,color:#FFFFFF,stroke-width:2px
+  classDef nodeWeb fill:#2563EB,stroke:#1D4ED8,color:#FFFFFF,stroke-width:2px
+  classDef nodeUI fill:#0891B2,stroke:#0E7490,color:#FFFFFF,stroke-width:2px
+  classDef nodeTrigger fill:#EA580C,stroke:#C2410C,color:#FFFFFF,stroke-width:2px
+  classDef nodeScan fill:#DC2626,stroke:#B91C1C,color:#FFFFFF,stroke-width:3px
+  classDef nodeCollect fill:#16A34A,stroke:#15803D,color:#FFFFFF,stroke-width:2px
+  classDef nodeFilter fill:#CA8A04,stroke:#A16207,color:#FFFFFF,stroke-width:2px
+  classDef nodeAI fill:#9333EA,stroke:#7E22CE,color:#FFFFFF,stroke-width:2px
+  classDef nodeDisplay fill:#0284C7,stroke:#0369A1,color:#FFFFFF,stroke-width:2px
+  classDef nodeTelegram fill:#0D9488,stroke:#0F766E,color:#FFFFFF,stroke-width:2px
+  classDef nodeDone fill:#059669,stroke:#047857,color:#FFFFFF,stroke-width:3px
+  classDef nodeStore fill:#E0E7FF,stroke:#4F46E5,color:#312E81,stroke-width:2px
+  classDef nodeModeKW fill:#FEF3C7,stroke:#D97706,color:#92400E,stroke-width:2px
+  classDef nodeModeACT fill:#D1FAE5,stroke:#059669,color:#065F46,stroke-width:2px
+  classDef nodeModeFULL fill:#EDE9FE,stroke:#7C3AED,color:#5B21B6,stroke-width:2px
+  classDef nodeDecision fill:#FFF7ED,stroke:#F97316,color:#9A3412,stroke-width:2px
+  classDef nodeExternal fill:#F1F5F9,stroke:#64748B,color:#334155,stroke-width:2px,stroke-dasharray:5
+
+  class START nodeStart
+  class WEB,SYNC,LOOP nodeWeb
+  class DASH,DETAIL,SETMOD,API,POLL nodeUI
+  class AUTOWAIT,SLEEP,IDLE,MANUAL,MODECHG nodeTrigger
+  class SCAN nodeScan
+  class QHD,QBD,QHD2,MERGE,GN_SITE,GN_ALL,RSS nodeCollect
+  class FILTIN,DECODE nodeFilter
+  class KW,GEM,UPSERT,CHHD,CHBDY,SKIPHIST nodeAI
+  class DISP nodeDisplay
+  class PACK,SEND nodeTelegram
+  class DONE nodeDone
+  class CFG,CHINH,NOTIF,HIST,DECCACHE,TGSENT nodeStore
+  class M_KW nodeModeKW
+  class M_ACT nodeModeACT
+  class M_FULL nodeModeFULL
+  class ROLE,PRESS,RSSON,WL,AIIN,PASS,TG,MORE nodeDecision
+  class GNewsExt,RSSExt,GeminiExt,TgExt nodeExternal
+
+  %% --- Nền subgraph ---
+  style CFGSTORE fill:#EEF2FF,stroke:#6366F1,stroke-width:3px,color:#312E81
+  style UI fill:#ECFEFF,stroke:#06B6D4,stroke-width:3px,color:#164E63
+  style TRIGGER fill:#FFF7ED,stroke:#F97316,stroke-width:3px,color:#9A3412
+  style MODES fill:#FAF5FF,stroke:#A855F7,stroke-width:3px,color:#581C87
+  style COLLECT fill:#F0FDF4,stroke:#22C55E,stroke-width:3px,color:#14532D
+  style FILTERBLK fill:#FEFCE8,stroke:#EAB308,stroke-width:3px,color:#713F12
+  style AIBLK fill:#F5F3FF,stroke:#8B5CF6,stroke-width:3px,color:#4C1D95
+  style DISPLAYBLK fill:#F0F9FF,stroke:#0EA5E9,stroke-width:3px,color:#0C4A6E
+  style TELEGRAMBLK fill:#F0FDFA,stroke:#14B8A6,stroke-width:3px,color:#134E4A

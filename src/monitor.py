@@ -28,19 +28,12 @@ from src.paths import (
     HISTORY_PATH,
     NOTIFICATIONS_PATH,
     URL_DECODE_CACHE_PATH,
-    migrate_legacy_files,
     path_str,
 )
-from src.press_whitelist import PressWhitelist
+from src.press_whitelist import PressWhitelist, _norm_domain
 from src.rss_fetch import collect_rss_for_target
+from src.common import article_link_url, is_google_news_url, parse_ts
 from src.telegram_notify import is_telegram_enabled, notify_records
-
-migrate_legacy_files()
-
-
-def is_google_news_url(url: str) -> bool:
-    u = str(url or "").lower()
-    return "news.google.com" in u or "google.com/rss/articles" in u
 
 
 def load_decode_cache() -> Dict[str, str]:
@@ -140,7 +133,10 @@ _KIND_RANK = {"biendong": 2, "hoatdong": 1}
 def _merge_article_pairs(
     pairs: List[Tuple[Dict[str, Any], str]],
 ) -> List[Tuple[Dict[str, Any], str]]:
-    """Trùng URL: ưu tiên biendong (bỏ hoatdong trùng — không phân tích 2 lần)."""
+    """
+    Hai lượt quét GNews: (1) chỉ tên → hoatdong, (2) tên + từ khóa chức vụ → biendong.
+    Cùng URL xuất hiện ở cả hai → giữ biendong, bỏ bản hoatdong (Gemini chỉ chạy một lần).
+    """
     by_key: Dict[str, Tuple[Dict[str, Any], str]] = {}
     for art, kind in pairs:
         key = _article_dedup_key(art)
@@ -164,6 +160,18 @@ def _scan_perf_options(gn: Dict[str, Any]) -> Dict[str, Any]:
 
 ROLE_QUERY_SUFFIX = (
     "(bổ nhiệm OR miễn nhiệm OR giữ chức OR phân công OR tân nhiệm OR quyết định)"
+)
+
+_ROLE_CHANGE_STRONG = re.compile(
+    r"bổ\s*nhiệm|miễn\s*nhiệm|bãi\s*nhiệm|điều\s*động|bổ\s*nhiệm\s+giữ\s+chức|"
+    r"luân\s+chuyển|thay\s+thế|bổ\s+nhiệm\s+lại|giữ\s+chức\s+vụ|được\s+giao\s+giữ",
+    re.IGNORECASE,
+)
+_ACTIVITY_ROUTINE = re.compile(
+    r"họp\b|hội\s+nghị|làm\s+việc|thăm\b|kiểm\s+tra|phát\s+biểu|"
+    r"dự\s+(lễ|hội)|chủ\s+trì|dâng\s+hương|gặp\s+mặt|triển\s+khai|"
+    r"động\s+viên|chúc\s+mừng|kỷ\s+niệm",
+    re.IGNORECASE,
 )
 
 
@@ -195,14 +203,393 @@ def is_chinh_thong_filter_enabled(cfg: Optional[Dict[str, Any]] = None) -> bool:
     return _gn_bool(gn.get("filter_chinh_thong_only", True), True)
 
 
-def article_link_url(row: Dict[str, Any]) -> str:
-    resolved = str(row.get("resolved_url") or "").strip()
-    url = str(row.get("url") or "").strip()
-    if resolved.startswith("http"):
-        return resolved
-    if url.startswith("http") and not is_google_news_url(url):
-        return url
-    return resolved or url
+def _gnews_publisher_href(art: Dict[str, Any]) -> str:
+    pub = art.get("publisher")
+    if isinstance(pub, dict):
+        return str(pub.get("href") or pub.get("url") or "").strip()
+    if isinstance(pub, str) and pub.strip().startswith("http"):
+        return pub.strip()
+    return ""
+
+
+def _quote_gnews_term(text: str) -> str:
+    q = str(text or "").strip()
+    if not q:
+        return q
+    if q.startswith('"') and q.endswith('"'):
+        return q
+    return f'"{q}"'
+
+
+AI_SCAN_PROFILES: Dict[str, Dict[str, Any]] = {
+    "keyword": {
+        "label": "Từ khóa (không Gemini)",
+        "hint": "Lưu/hiển thị mọi tin GNews & RSS tìm được, không gọi Gemini, không lọc tiêu đề.",
+        "use_gemini": False,
+        "ai_verify_target": False,
+        "scan_role_change": False,
+    },
+    "activity": {
+        "label": "AI — hoạt động & đúng đối tượng",
+        "hint": "Gemini lọc hoạt động và xác nhận đúng tên; không quét truy vấn bổ nhiệm/miễn nhiệm.",
+        "use_gemini": True,
+        "ai_verify_target": True,
+        "scan_role_change": False,
+    },
+    "full": {
+        "label": "AI — đầy đủ (cả biến động chức vụ)",
+        "hint": "Thêm lượt tìm bổ nhiệm/miễn nhiệm và kênh biến động; dễ lẫn tin người khác nếu tắt xác nhận đối tượng.",
+        "use_gemini": True,
+        "ai_verify_target": True,
+        "scan_role_change": True,
+    },
+    "open": {
+        "label": "AI — không lọc đối tượng (cũ)",
+        "hint": "Gemini bật nhưng không bắt Matched_Target — dễ nhầm người. Nên chuyển sang «hoạt động & đúng đối tượng».",
+        "use_gemini": True,
+        "ai_verify_target": False,
+        "scan_role_change": False,
+    },
+}
+
+AI_SCAN_UI_MODES = ("keyword", "activity", "full")
+
+
+def _gn_flags_snapshot(gn: Dict[str, Any]) -> Tuple[bool, bool, bool]:
+    use_g = _gn_bool(gn.get("use_gemini_analysis", gn.get("use_ai", True)), True)
+    verify = (
+        _gn_bool(gn.get("ai_verify_target"), True)
+        if "ai_verify_target" in gn
+        else True
+    )
+    role = (
+        _gn_bool(gn.get("scan_role_change"), True)
+        if "scan_role_change" in gn
+        else True
+    )
+    return use_g, verify, role
+
+
+def detect_ai_scan_mode(cfg: Optional[Dict[str, Any]] = None) -> str:
+    """Suy ra chế độ từ các cờ trong config (tương thích bản cũ)."""
+    data = cfg if cfg is not None else load_config()
+    gn = data.get("google_news") if isinstance(data.get("google_news"), dict) else {}
+    use_g, verify, role = _gn_flags_snapshot(gn)
+    if not use_g:
+        return "keyword"
+    if role:
+        return "full"
+    if verify:
+        return "activity"
+    return "open"
+
+
+def apply_ai_scan_mode(gn: Dict[str, Any], mode: str) -> str:
+    """Ghi đồng bộ 3 cờ AI theo một chế độ — tránh xung đột cài đặt."""
+    key = str(mode or "activity").strip().lower()
+    if key not in AI_SCAN_PROFILES:
+        key = "activity"
+    prof = AI_SCAN_PROFILES[key]
+    gn["use_gemini_analysis"] = prof["use_gemini"]
+    gn["use_ai"] = prof["use_gemini"]
+    gn["ai_verify_target"] = prof["ai_verify_target"]
+    gn["scan_role_change"] = prof["scan_role_change"]
+    gn["ai_scan_mode"] = key
+    return key
+
+
+def _flags_match_profile(gn: Dict[str, Any], mode: str) -> bool:
+    if mode not in AI_SCAN_PROFILES:
+        return False
+    prof = AI_SCAN_PROFILES[mode]
+    use_g, verify, role = _gn_flags_snapshot(gn)
+    return (
+        use_g == prof["use_gemini"]
+        and verify == prof["ai_verify_target"]
+        and role == prof["scan_role_change"]
+    )
+
+
+def ensure_ai_scan_sync(gn: Dict[str, Any], cfg: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Đồng bộ các cờ use_ai / verify / scan_role_change theo ai_scan_mode đã chọn.
+    Không suy ngược từ cờ cũ — tránh đổi «từ khóa» thành «activity» khi quét.
+    """
+    mode = str(gn.get("ai_scan_mode") or "").strip().lower()
+    if mode in AI_SCAN_PROFILES:
+        if not _flags_match_profile(gn, mode):
+            print(f"  [CONFIG] Đồng bộ cờ AI theo chế độ «{mode}»")
+        return apply_ai_scan_mode(gn, mode)
+    detected = detect_ai_scan_mode(
+        cfg if cfg is not None else {"google_news": gn}
+    )
+    if detected not in AI_SCAN_PROFILES:
+        detected = "activity"
+    print(f"  [CONFIG] Chưa có ai_scan_mode hợp lệ — dùng «{detected}»")
+    return apply_ai_scan_mode(gn, detected)
+
+
+def resolve_ai_scan_options(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Một nguồn sự thật cho quét — luôn qua ensure_ai_scan_sync."""
+    data = cfg if cfg is not None else load_config()
+    gn = data.get("google_news") if isinstance(data.get("google_news"), dict) else {}
+    if not isinstance(gn, dict):
+        gn = {}
+        data["google_news"] = gn
+    mode = ensure_ai_scan_sync(gn, data)
+    prof = AI_SCAN_PROFILES[mode]
+    return {
+        "mode": mode,
+        "label": prof["label"],
+        "hint": prof["hint"],
+        "use_gemini": bool(prof["use_gemini"]),
+        "ai_verify_target": bool(prof["ai_verify_target"]),
+        "scan_role_change": bool(prof["scan_role_change"]),
+    }
+
+
+def set_and_persist_ai_scan_mode(mode: str) -> Dict[str, Any]:
+    """
+    Lưu chế độ quét do người dùng chọn — mọi lượt quét (thủ công + tự động) đọc từ đây.
+    """
+    key = str(mode or "activity").strip().lower()
+    if key not in AI_SCAN_UI_MODES:
+        key = "activity"
+    cfg = load_config()
+    gn = cfg.get("google_news") if isinstance(cfg.get("google_news"), dict) else {}
+    if not isinstance(gn, dict):
+        gn = {}
+        cfg["google_news"] = gn
+    apply_ai_scan_mode(gn, key)
+    cfg["google_news"] = gn
+    write_json(CONFIG_PATH, cfg)
+    return resolve_ai_scan_options(cfg)
+
+
+def build_keyword_only_ai_result(
+    art: Dict[str, Any], target: Target, news_kind: str
+) -> Dict[str, Any]:
+    """Không gọi Gemini — chỉ lưu theo từ khóa tìm kiếm (không tự gán đổi chức vụ)."""
+    title = str(art.get("title") or "").strip()
+    desc = str(art.get("description") or "").strip()
+    summary = title or desc[:200] or f"{target.name}: tin từ khóa quét"
+    return {
+        "Matched_Target": True,
+        "Is_Activity": True,
+        "Is_Change": False,
+        "Summary": summary,
+        "AI_Disabled": True,
+        "Source": "keyword_scan",
+    }
+
+
+def _article_passes_ai_filters(
+    ai_result: Dict[str, Any], *, verify_target: bool
+) -> bool:
+    if not ai_result.get("Is_Activity"):
+        return False
+    if verify_target and not ai_result.get("Matched_Target"):
+        return False
+    return True
+
+
+def _target_name_appears(
+    name: str, title: str, description: str, *, position: str = ""
+) -> bool:
+    """
+    Tên có trong tiêu đề/mô tả — chỉ dùng hậu kiểm tin biến động chức vụ (sanitize).
+    Bật AI: mọi bài đều qua Gemini. Tắt AI: lưu/hiển thị hết tin tìm được.
+    """
+    name = str(name or "").strip()
+    if not name:
+        return False
+    blob = f"{title or ''} {description or ''}".lower()
+    name_l = name.lower()
+    if name_l in blob:
+        if " " not in name and len(name_l) <= 4:
+            return bool(re.search(rf"\b{re.escape(name_l)}\b", blob, re.IGNORECASE))
+        return True
+    parts = [p for p in name.split() if len(p) >= 2]
+    if len(parts) >= 2:
+        return all(p.lower() in blob for p in parts)
+    return False
+
+
+def _sanitize_ai_result(
+    target: Target,
+    article: Dict[str, Any],
+    data: Dict[str, Any],
+    *,
+    news_kind: str,
+    allow_role_change: bool = True,
+) -> Dict[str, Any]:
+    """Hậu kiểm Gemini — giảm nhầm đối tượng và nhầm hoạt động với đổi chức vụ."""
+    title = str(article.get("title") or "")
+    desc = str(article.get("description") or "")
+    text = f"{title} {desc}"
+
+    matched = bool(data.get("Matched_Target"))
+    activity = bool(data.get("Is_Activity"))
+    change = bool(data.get("Is_Change"))
+    from_p = str(data.get("From_Position") or "").strip()
+    to_p = str(data.get("To_Position") or "").strip()
+    decision = str(data.get("Decision_Text") or "").strip()
+    summary = str(data.get("Summary") or "")
+    sl = summary.lower()
+    notes: List[str] = []
+
+    if matched and str(news_kind) == "biendong" and not _target_name_appears(
+        target.name, title, desc
+    ):
+        matched = False
+        activity = False
+        change = False
+        notes.append("biendong_ten_phai_co_trong_tieu_de")
+
+    if "không liên quan đối tượng" in sl:
+        matched = False
+        activity = False
+        change = False
+        notes.append("summary_khong_lien_quan")
+    elif "không liên quan hoạt động" in sl:
+        activity = False
+        change = False
+        notes.append("summary_khong_hoat_dong")
+    elif "không thay đổi chức vụ" in sl:
+        change = False
+        notes.append("summary_khong_doi_chuc")
+
+    if matched and activity and change:
+        has_fields = bool(from_p or to_p or decision)
+        has_role_kw = bool(_ROLE_CHANGE_STRONG.search(text))
+        has_routine = bool(_ACTIVITY_ROUTINE.search(text))
+        if not has_fields and not has_role_kw:
+            change = False
+            notes.append("khong_co_truong_chuc_vu_va_tu_khoa")
+        elif has_routine and not has_role_kw and not has_fields:
+            change = False
+            notes.append("hoat_dong_thuong_nhat")
+        elif str(news_kind) == "hoatdong" and not has_fields:
+            change = False
+            notes.append("hoatdong_can_chung_cu_doi_chuc")
+
+    try:
+        conf = int(float(data.get("Confidence", 0)))
+    except Exception:
+        conf = 0
+    if change and conf < 55 and not (from_p or to_p):
+        change = False
+        notes.append("do_tin_cay_thap")
+
+    if not matched:
+        activity = False
+    if not activity:
+        change = False
+    if not allow_role_change:
+        change = False
+        if "tat_quet_bien_dong_chuc_vu" not in notes:
+            notes.append("tat_quet_bien_dong_chuc_vu")
+
+    out = dict(data)
+    out["Matched_Target"] = matched
+    out["Is_Activity"] = activity
+    out["Is_Change"] = change
+    if notes:
+        out["Sanitize_Notes"] = notes
+    return out
+
+
+def chinh_thong_whitelist() -> PressWhitelist:
+    return PressWhitelist.from_file(path_str(CHINH_THONG_PATH))
+
+
+def record_is_chinh_thong(
+    row: Dict[str, Any], whitelist: Optional[PressWhitelist] = None
+) -> bool:
+    """Tin thuộc báo trong danh sách chính thống (theo URL hoặc domain đã lưu)."""
+    wl = whitelist if whitelist is not None else chinh_thong_whitelist()
+    if not wl.domains:
+        return False
+    link = article_link_url(row)
+    if link and wl.is_allowed_url(link):
+        return True
+    dom = str(row.get("press_domain") or "").strip()
+    if dom and wl.is_allowed_url(f"https://{dom}/"):
+        return True
+    press = str(row.get("press_name") or "").strip()
+    if press and press in wl.domain_to_name.values():
+        return True
+    return False
+
+
+def record_matches_ai_display_mode(
+    row: Dict[str, Any], ai_opts: Dict[str, Any]
+) -> bool:
+    """Lọc tin đã lưu theo chế độ AI hiện tại (đổi chế độ → đổi danh sách hiển thị)."""
+    mode = str(ai_opts.get("mode") or "activity")
+    if mode == "keyword" or not ai_opts.get("use_gemini"):
+        return True
+    ai = row.get("ai_result") if isinstance(row.get("ai_result"), dict) else {}
+    if ai.get("AI_Disabled") or ai.get("Source") == "keyword_scan":
+        return False
+    return _article_passes_ai_filters(
+        ai, verify_target=bool(ai_opts.get("ai_verify_target"))
+    )
+
+
+def filter_notifications_for_display(
+    notifs: Dict[str, List[Dict[str, Any]]],
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Lọc theo báo chính thống + chế độ AI đang chọn."""
+    data = cfg if cfg is not None else load_config()
+    ai_opts = resolve_ai_scan_options(data)
+    out: Dict[str, List[Dict[str, Any]]] = {
+        "channel_hoatdong": list(notifs.get("channel_hoatdong") or []),
+        "channel_biendong": list(notifs.get("channel_biendong") or []),
+    }
+    if not ai_opts.get("scan_role_change"):
+        out["channel_biendong"] = []
+    for ch in ("channel_hoatdong", "channel_biendong"):
+        out[ch] = [
+            r
+            for r in out.get(ch) or []
+            if isinstance(r, dict) and record_matches_ai_display_mode(r, ai_opts)
+        ]
+    if not is_chinh_thong_filter_enabled(cfg):
+        return out
+    wl = chinh_thong_whitelist()
+    if not wl.domains:
+        for ch in ("channel_hoatdong", "channel_biendong"):
+            out[ch] = []
+        return out
+    for ch in ("channel_hoatdong", "channel_biendong"):
+        rows = out.get(ch) or []
+        out[ch] = [
+            r for r in rows if isinstance(r, dict) and record_is_chinh_thong(r, wl)
+        ]
+    return out
+
+
+def _remove_notification_by_key(
+    notifs: Dict[str, List[Dict[str, Any]]], history_key: str
+) -> None:
+    for ch in ("channel_hoatdong", "channel_biendong"):
+        rows = notifs.get(ch) or []
+        if not isinstance(rows, list):
+            continue
+        notifs[ch] = [
+            r
+            for r in rows
+            if not (
+                isinstance(r, dict)
+                and _history_key(
+                    str(r.get("target_name") or ""),
+                    str(r.get("url") or ""),
+                )
+                == history_key
+            )
+        ]
 
 
 def enrich_record_for_api(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -213,6 +600,21 @@ def enrich_record_for_api(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def _history_key(target_name: str, url: str) -> str:
     return f"{str(target_name or '').strip()}|{str(url or '').strip()}"
+
+
+def _notification_keys(notifs: Dict[str, List[Dict[str, Any]]]) -> Set[str]:
+    """Khóa các bài đã lưu trong notifications — tránh trùng khi quét lại."""
+    keys: Set[str] = set()
+    for ch in ("channel_hoatdong", "channel_biendong"):
+        for row in notifs.get(ch) or []:
+            if isinstance(row, dict):
+                k = _history_key(
+                    str(row.get("target_name") or ""),
+                    str(row.get("url") or ""),
+                )
+                if k.strip("|"):
+                    keys.add(k)
+    return keys
 
 
 def load_history() -> List[str]:
@@ -286,9 +688,101 @@ def save_notifications(notifs: Dict[str, List[Dict[str, Any]]]) -> None:
     write_json(NOTIFICATIONS_PATH, notifs)
 
 
-def google_news_search(query: str, language: str, country: str, max_results: int) -> List[Dict[str, Any]]:
-    gnews = GNews(language=language, country=country, period="1d", max_results=max_results)
-    return gnews.get_news(query)
+def _google_news_search_feedparser(gnews: GNews, query: str) -> List[Dict[str, Any]]:
+    """
+    GNews gốc dùng feed_data.status — feedparser 6.x đôi khi không có .status
+    (Google trả HTML lỗi) → AttributeError. Parse an toàn tại đây.
+    """
+    import feedparser
+    from gnews.utils.constants import BASE_URL, USER_AGENT
+
+    key = "%20".join(str(query or "").split(" "))
+    path = f"/search?q={key}"
+    url = BASE_URL + path + gnews._ceid()
+    feed_data = feedparser.parse(url, agent=USER_AGENT)
+    status = getattr(feed_data, "status", None)
+    if status == 429:
+        raise RuntimeError("GNews rate limit (429)")
+    entries = list(getattr(feed_data, "entries", None) or [])
+    out: List[Dict[str, Any]] = []
+    for entry in entries[: max(1, int(gnews.max_results))]:
+        item = gnews._process(entry)
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def _google_news_search_single(
+    query: str, language: str, country: str, max_results: int
+) -> List[Dict[str, Any]]:
+    gnews = GNews(
+        language=language, country=country, period="1d", max_results=max_results
+    )
+    try:
+        out = gnews.get_news(query)
+        return out if isinstance(out, list) else []
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "status" in msg or "failed to fetch or parse" in msg:
+            return _google_news_search_feedparser(gnews, query)
+        raise
+
+
+def _google_news_search_by_domains(
+    query_text: str,
+    domains: List[str],
+    *,
+    language: str,
+    country: str,
+    max_results: int,
+) -> List[Dict[str, Any]]:
+    """Mỗi báo một truy vấn site: — tránh URL OR dài gây lỗi feedparser/GNews."""
+    base = str(query_text or "").strip()
+    doms = sorted({str(d).strip() for d in domains if str(d).strip()})
+    if not base or not doms:
+        return []
+
+    per = max(3, (max_results + len(doms) - 1) // len(doms))
+    merged: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    term = _quote_gnews_term(base)
+
+    for dom in doms:
+        q = f"{term} site:{dom}"
+        try:
+            batch = _google_news_search_single(q, language, country, per)
+        except Exception as exc:
+            print(f"  [WARN] GNews site:{dom}: {exc}")
+            continue
+        for art in batch:
+            if not isinstance(art, dict):
+                continue
+            u = str(art.get("url") or "").strip()
+            if u and u not in seen:
+                seen.add(u)
+                merged.append(art)
+        if len(merged) >= max_results:
+            break
+    return merged[:max_results]
+
+
+def google_news_search(
+    query: str,
+    language: str,
+    country: str,
+    max_results: int,
+    *,
+    whitelist_domains: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    if whitelist_domains:
+        return _google_news_search_by_domains(
+            query,
+            list(whitelist_domains),
+            language=language,
+            country=country,
+            max_results=max_results,
+        )
+    return _google_news_search_single(query, language, country, max_results)
 
 
 def clean_json_text(text: str) -> str:
@@ -299,7 +793,14 @@ def clean_json_text(text: str) -> str:
     return text.strip()
 
 
-def call_gemini_for_change(gemini_api_key: str, target: Target, article: Dict[str, Any]) -> Dict[str, Any]:
+def call_gemini_for_change(
+    gemini_api_key: str,
+    target: Target,
+    article: Dict[str, Any],
+    *,
+    news_kind: str = "hoatdong",
+    allow_role_change: bool = True,
+) -> Dict[str, Any]:
     genai.configure(api_key=gemini_api_key)
 
     title = article.get("title", "")
@@ -308,14 +809,39 @@ def call_gemini_for_change(gemini_api_key: str, target: Target, article: Dict[st
 
     position_ref = target.position.strip() if isinstance(target.position, str) else ""
     position_or_default = position_ref or "chức vụ"
+    kind = str(news_kind or "hoatdong").strip()
+    kind_hint = (
+        "Bài tìm qua truy vấn BIẾN ĐỘNG CHỨC VỤ — vẫn phải xác nhận đúng {name}; "
+        "nếu bổ nhiệm/miễn nhiệm áp dụng cho người khác thì Matched_Target=false."
+        if kind == "biendong"
+        else "Bài tìm qua truy vấn HOẠT ĐỘNG — Is_Change=true rất hiếm; "
+        "họp, thăm, phát biểu, làm việc KHÔNG phải đổi chức vụ."
+    )
 
-    # NOTE: prompt là chuỗi f-string-like nhưng thực tế dùng .format().
-    # Tránh để các placeholder {date}/{from}/{to}/{decision} trong prompt bị Python .format() hiểu nhầm.
     prompt = (
         "Bạn là hệ thống phân tích tin tức. "
 
         "Hãy đọc bài báo sau và chỉ xét đúng đối tượng: {name} (không suy rộng sang người khác). "
         "Nếu bài KHÔNG nói về hoạt động/việc làm của đối tượng đó, hãy loại bài đó.\n\n"
+        "Ngữ cảnh truy vấn: {kind_hint}\n\n"
+        "QUY TẮC Matched_Target (rất quan trọng):\n"
+        "- Matched_Target=true CHỈ KHI bài nói TRỰC TIẾP về {name} — là nhân vật chính, người hành động, hoặc người được bổ nhiệm/miễn nhiệm.\n"
+        "- Matched_Target=false nếu chỉ nhắc tên qua loa, nhắc trong danh sách nhiều người, "
+        "hay nhầm người khác cùng họ hoặc tên gần giống.\n"
+        "- Việc bài có từ khóa bổ nhiệm/miễn nhiệm nhưng đối tượng là NGƯỜI KHÁC => Matched_Target=false.\n"
+        "- Tiêu đề/mô tả có thể chỉ ghi chức danh (vd. Tổng Bí thư) không ghi đủ họ tên — "
+        "vẫn Matched_Target=true nếu ngữ cảnh rõ là {name} (chức vụ tham chiếu: {position_ref}) "
+        "và không thể hiểu là người khác.\n"
+        "- Matched_Target=false nếu không đủ căn cứ xác định là {name} (bài chung chung nhiều lãnh đạo).\n\n"
+        "QUY TẮC Is_Activity:\n"
+        "- Is_Activity=true khi bài nói việc {name} đang làm (họp, thăm, chủ trì, phát biểu…).\n"
+        "- Không nhầm bài chủ yếu về người/cơ quan khác.\n\n"
+        "QUY TẮC Is_Change:\n"
+        "- Is_Change=true CHỈ KHI có thông tin RÕ về thay đổi chức vụ/việc làm của đúng {name} "
+        "(bổ nhiệm, miễn nhiệm, điều động, bổ nhiệm giữ chức, quyết định giao nhiệm vụ mới…).\n"
+        "- Không coi họp, phát biểu, thăm hỏi, hoạt động thường nhật là đổi chức vụ.\n"
+        "- Bắt buộc điền From_Position hoặc To_Position hoặc Decision_Text nếu Is_Change=true; "
+        "thiếu cả ba => Is_Change=false.\n\n"
         "Đối tượng: {name}. Chức vụ tham chiếu: {position_ref}.\n\n"
         "Bài báo:\n"
         "- Tiêu đề: {title}\n"
@@ -343,13 +869,16 @@ def call_gemini_for_change(gemini_api_key: str, target: Target, article: Dict[st
         name=target.name,
         position_ref=position_ref,
         position_or_default=position_or_default,
+        kind_hint=kind_hint.format(name=target.name),
         title=title,
         description=description,
         url=url,
     )
 
-    preferred = str(os.environ.get("GEMINI_MODEL", "")).strip() or ""
-    candidate_models = [preferred, "gemini-1.5-flash", "gemini-2.5-flash"]
+    cfg = load_config()
+    from_cfg = str(cfg.get("gemini_model") or "").strip()
+    preferred = str(os.environ.get("GEMINI_MODEL", "")).strip() or from_cfg
+    candidate_models = [preferred, "gemini-2.5-flash", "gemini-1.5-flash"]
 
     resp = None
     tried: List[str] = []
@@ -440,14 +969,34 @@ def call_gemini_for_change(gemini_api_key: str, target: Target, article: Dict[st
 
     summary = str(data.get("Summary", ""))[:500]
 
-    return {
+    parsed: Dict[str, Any] = {
         "Is_Activity": bool(is_activity),
         "Is_Change": bool(is_change) and bool(is_activity),
         "Matched_Target": bool(matched_target),
         "Summary": summary,
         "Confidence": max(0, min(100, conf)),
         "Target_Name": target.name,
+        "From_Position": str(data.get("From_Position") or "")[:300],
+        "To_Position": str(data.get("To_Position") or "")[:300],
+        "Decision_Text": str(data.get("Decision_Text") or "")[:500],
+        "Change_Date": str(data.get("Change_Date") or "")[:80],
+        "News_Kind": kind,
     }
+    return _sanitize_ai_result(
+        target, article, parsed, news_kind=kind, allow_role_change=allow_role_change
+    )
+
+
+def is_confirmed_role_change(ai_result: Dict[str, Any]) -> bool:
+    """Đủ điều kiện đưa vào kênh biến động chức vụ."""
+    if not ai_result.get("Is_Change"):
+        return False
+    if not ai_result.get("Matched_Target"):
+        return False
+    from_p = str(ai_result.get("From_Position") or "").strip()
+    to_p = str(ai_result.get("To_Position") or "").strip()
+    decision = str(ai_result.get("Decision_Text") or "").strip()
+    return bool(from_p or to_p or decision)
 
 
 def _collect_articles_for_target(
@@ -459,6 +1008,8 @@ def _collect_articles_for_target(
     whitelist: Optional[PressWhitelist] = None,
     use_rss: bool = True,
     rss_max_per_feed: int = 40,
+    scan_role_change: bool = True,
+    filter_press: bool = False,
 ) -> List[Tuple[Dict[str, Any], str]]:
     """GNews + RSS; trùng URL ưu tiên biendong (bỏ hoatdong trùng)."""
     pairs: List[Tuple[Dict[str, Any], str]] = []
@@ -466,11 +1017,30 @@ def _collect_articles_for_target(
     q_hd = str(target.name).strip()
     q_bd = f"{target.name} {ROLE_QUERY_SUFFIX}".strip()
 
-    # Biến động chức vụ trước — cùng bài với hoạt động sẽ giữ loại biendong
-    for query, kind in ((q_bd, "biendong"), (q_hd, "hoatdong")):
-        print(f"[SCAN] target={target.name} kind={kind} query={query[:100]}...")
+    scan_kinds: List[Tuple[str, str]] = [(q_hd, "hoatdong")]
+    if scan_role_change:
+        scan_kinds = [(q_bd, "biendong"), (q_hd, "hoatdong")]
+
+    press_domains: Optional[List[str]] = None
+    if filter_press and whitelist is not None and whitelist.domains:
+        press_domains = sorted(whitelist.domains)
+
+    for query, kind in scan_kinds:
+        if press_domains:
+            print(
+                f"[SCAN] target={target.name} kind={kind} "
+                f"GNews ({len(press_domains)} báo chính thống): {query[:80]}..."
+            )
+        else:
+            print(f"[SCAN] target={target.name} kind={kind} query={query[:100]}...")
         try:
-            batch = google_news_search(query, language=language, country=country, max_results=max_results)
+            batch = google_news_search(
+                query,
+                language=language,
+                country=country,
+                max_results=max_results,
+                whitelist_domains=press_domains,
+            )
         except Exception as exc:
             print(f"  [ERR] GNews: {exc}")
             continue
@@ -484,7 +1054,7 @@ def _collect_articles_for_target(
             whitelist,
             target.name,
             max_per_feed=rss_max_per_feed,
-            role_query_suffix=ROLE_QUERY_SUFFIX,
+            role_query_suffix=ROLE_QUERY_SUFFIX if scan_role_change else "",
         )
         if rss_pairs:
             print(f"  [RSS] {len(rss_pairs)} bài khớp tên")
@@ -502,18 +1072,25 @@ def _apply_decode_and_whitelist(
     *,
     target_name: str,
     history_set: Set[str],
+    saved_keys: Set[str],
     whitelist: PressWhitelist,
     filter_press: bool,
+    use_ai: bool = True,
     decode_workers: int = 4,
     decode_interval: float = 0.15,
-) -> Tuple[List[Tuple[Dict[str, Any], str]], int]:
+    ignore_saved: bool = False,
+) -> Tuple[List[Tuple[Dict[str, Any], str]], int, int]:
     """Lọc history trước decode; chỉ decode URL Google News còn lại."""
     pending: List[Tuple[Dict[str, Any], str]] = []
     skipped_history = 0
 
     for art, kind in articles:
         url = str(art.get("url") or "").strip()
-        if _history_key(target_name, url) in history_set:
+        key = _history_key(target_name, url)
+        if not ignore_saved and key in saved_keys:
+            skipped_history += 1
+            continue
+        if use_ai and key in history_set:
             skipped_history += 1
             continue
         pending.append((art, kind))
@@ -530,6 +1107,9 @@ def _apply_decode_and_whitelist(
     )
 
     kept: List[Tuple[Dict[str, Any], str]] = []
+    skipped_whitelist = 0
+    skipped_no_resolve = 0
+    rejected_domains: Dict[str, int] = {}
     for art, kind in pending:
         url = str(art.get("url") or "").strip()
         pre_resolved = str(art.get("resolved_url") or "").strip()
@@ -537,10 +1117,25 @@ def _apply_decode_and_whitelist(
             resolved = pre_resolved
         else:
             resolved = decoded.get(url) or (url if not is_google_news_url(url) else "")
-        if filter_press and resolved and not whitelist.is_allowed_url(resolved):
-            continue
+        pub_href = _gnews_publisher_href(art)
+        if filter_press and not resolved and pub_href.startswith("http"):
+            if whitelist.is_allowed_url(pub_href):
+                resolved = pub_href
         if filter_press and not resolved:
+            skipped_no_resolve += 1
             continue
+        if filter_press and resolved and not whitelist.is_allowed_url(resolved):
+            if pub_href.startswith("http") and whitelist.is_allowed_url(pub_href):
+                resolved = pub_href
+            else:
+                skipped_whitelist += 1
+                try:
+                    dom = _norm_domain(urlparse(resolved).netloc)
+                    if dom:
+                        rejected_domains[dom] = rejected_domains.get(dom, 0) + 1
+                except Exception:
+                    pass
+                continue
         art = dict(art)
         if resolved:
             art["resolved_url"] = resolved
@@ -550,7 +1145,18 @@ def _apply_decode_and_whitelist(
             if meta.get("press_domain") and not art.get("press_domain"):
                 art["press_domain"] = meta["press_domain"]
         kept.append((art, kind))
-    return kept, skipped_history
+    if skipped_whitelist:
+        print(f"  [FILTER] bỏ {skipped_whitelist} bài ngoài danh sách báo chính thống")
+        if rejected_domains:
+            top = sorted(rejected_domains.items(), key=lambda x: -x[1])[:4]
+            sample = ", ".join(f"{d}({n})" for d, n in top)
+            print(
+                f"  [FILTER] Nguồn bị loại (mẫu): {sample} — "
+                "thêm báo vào Cài đặt hoặc tắt «Chỉ báo chính thống»"
+            )
+    if skipped_no_resolve:
+        print(f"  [FILTER] bỏ {skipped_no_resolve} bài chưa decode được link báo")
+    return kept, skipped_history, skipped_whitelist
 
 
 def _process_gemini_batch(
@@ -559,6 +1165,7 @@ def _process_gemini_batch(
     pending: List[Tuple[Dict[str, Any], str]],
     *,
     gemini_workers: int,
+    allow_role_change: bool = True,
 ) -> Tuple[List[Tuple[Dict[str, Any], str, Dict[str, Any]]], List[str]]:
     """Gọi Gemini song song; trả (kết quả, danh sách lỗi)."""
     if not pending:
@@ -570,7 +1177,13 @@ def _process_gemini_batch(
 
     def _one(item: Tuple[Dict[str, Any], str]) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
         art, kind = item
-        ai = call_gemini_for_change(gemini_key, target, art)
+        ai = call_gemini_for_change(
+            gemini_key,
+            target,
+            art,
+            news_kind=kind,
+            allow_role_change=allow_role_change,
+        )
         return art, kind, ai
 
     if w <= 1 or len(pending) == 1:
@@ -595,23 +1208,54 @@ def _process_gemini_batch(
     return out, errors
 
 
-def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[str] = None) -> Dict[str, Any]:
+def process_once(
+    *,
+    scan_hours: Optional[float] = None,
+    target_name: Optional[str] = None,
+    ignore_history: bool = False,
+) -> Dict[str, Any]:
+    """Mỗi lượt quét đọc lại config.json — chế độ AI theo ai_scan_mode người dùng đã chọn."""
     cfg = load_config()
     gn = cfg.get("google_news") if isinstance(cfg.get("google_news"), dict) else {}
+    if not isinstance(gn, dict):
+        gn = {}
+        cfg["google_news"] = gn
+    ensure_ai_scan_sync(gn, cfg)
 
     history = load_history()
     history_set = set(history)
     notifs = load_notifications()
+    saved_keys = _notification_keys(notifs)
 
+    ai_opts = resolve_ai_scan_options(cfg)
+    use_gemini = ai_opts["use_gemini"]
+    verify_target = ai_opts["ai_verify_target"]
+    scan_role_change = ai_opts["scan_role_change"]
+    ai_mode = ai_opts["mode"]
     gemini_key = str(cfg.get("gemini_api_key") or "").strip()
-    if not gemini_key:
+    if use_gemini and not gemini_key:
         raise ValueError("Thiếu gemini_api_key trong config.json")
+    if not use_gemini:
+        print(
+            "[SCAN] Tắt phân tích Gemini — hiển thị/lưu mọi tin Google News & RSS trả về "
+            "(không lọc tên trong tiêu đề)"
+        )
+    elif ai_mode == "open":
+        print(
+            "[SCAN] Cảnh báo: chế độ AI không lọc đối tượng — "
+            "nên chọn «hoạt động & đúng đối tượng» trong Cài đặt"
+        )
+    print(f"[SCAN] Chế độ AI: {ai_opts['label']} ({ai_mode})")
+    if ignore_history:
+        print(
+            "  → Quét thủ công: bỏ qua history (xử lý lại URL đã thấy — tránh +0 tin vì history đầy)"
+        )
+    if not scan_role_change and use_gemini:
+        print("  → Không quét truy vấn bổ nhiệm/miễn nhiệm, không lưu kênh biendong")
 
     language = str(gn.get("language") or "vi")
     country = str(gn.get("country") or "VN")
     max_results = int(gn.get("max_results_per_target") or 15)
-    filter_press = is_chinh_thong_filter_enabled(cfg)
-    whitelist = PressWhitelist.from_file(path_str(CHINH_THONG_PATH))
 
     targets: List[Target] = []
     for t in cfg.get("targets") or []:
@@ -628,62 +1272,104 @@ def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[st
             raise ValueError(f'Không tìm thấy đối tượng "{filter_name}" trong cấu hình')
 
     perf = _scan_perf_options(gn)
+    filter_press = is_chinh_thong_filter_enabled(cfg)
+    whitelist = chinh_thong_whitelist()
+    if filter_press and not whitelist.domains:
+        print(
+            "[SCAN] Cảnh báo: Bật «Chỉ báo chính thống» nhưng danh sách báo trống — "
+            "hãy thêm báo trong Cài đặt hệ thống. Bỏ qua lọc domain lần quét này."
+        )
+        filter_press = False
+    use_rss_scan = perf["use_rss"] and filter_press
+    if perf["use_rss"] and not use_rss_scan and not is_chinh_thong_filter_enabled(cfg):
+        print("[SCAN] Tắt lọc báo chính thống — bỏ qua RSS danh sách chính thống")
+
     now_iso = datetime.now().isoformat(timespec="seconds")
     scan_results: List[Dict[str, Any]] = []
     saved_count = 0
     new_records: List[Dict[str, Any]] = []
     skipped_history_dup = 0
     skipped_pre_decode = 0
+    skipped_whitelist_total = 0
     ai_errors: List[str] = []
 
-    for target in targets:
+    for ti, target in enumerate(targets, start=1):
+        print(f"[SCAN] ({ti}/{len(targets)}) {target.name}")
+        sys.stdout.flush()
         raw_pairs = _collect_articles_for_target(
             target,
             language=language,
             country=country,
             max_results=max_results,
             whitelist=whitelist,
-            use_rss=perf["use_rss"],
+            use_rss=use_rss_scan,
             rss_max_per_feed=perf["rss_max_per_feed"],
+            scan_role_change=scan_role_change,
+            filter_press=filter_press,
         )
-        pairs, skipped_hist = _apply_decode_and_whitelist(
+        pairs, skipped_hist, skipped_wl = _apply_decode_and_whitelist(
             raw_pairs,
             target_name=target.name,
             history_set=history_set,
+            saved_keys=saved_keys,
             whitelist=whitelist,
             filter_press=filter_press,
+            use_ai=use_gemini and not ignore_history,
             decode_workers=perf["decode_workers"],
             decode_interval=perf["decode_interval"],
+            ignore_saved=ignore_history,
         )
         skipped_history_dup += skipped_hist
         skipped_pre_decode += skipped_hist
+        skipped_whitelist_total += skipped_wl
         pairs = _merge_article_pairs(pairs)
 
         if not pairs:
+            if raw_pairs:
+                print(
+                    f"  [SCAN] {target.name}: {len(raw_pairs)} bài thô, "
+                    f"0 bài sau lọc (history {skipped_hist}, chính thống {skipped_wl})"
+                )
             continue
 
         for art, news_kind in pairs:
             url = str(art.get("url") or "").strip()
             print(f"  [ARTICLE] {target.name} [{news_kind}] {url[:72]}...")
 
-        analyzed, batch_errors = _process_gemini_batch(
-            gemini_key,
-            target,
-            pairs,
-            gemini_workers=perf["gemini_workers"],
-        )
-        ai_errors.extend(batch_errors)
+        if use_gemini:
+            to_analyze = list(pairs)
+            if to_analyze:
+                print(f"  [AI] Gửi {len(to_analyze)} bài cho Gemini (không lọc trước theo tiêu đề)")
+            analyzed, batch_errors = _process_gemini_batch(
+                gemini_key,
+                target,
+                to_analyze,
+                gemini_workers=perf["gemini_workers"],
+                allow_role_change=scan_role_change,
+            )
+            ai_errors.extend(batch_errors)
+        else:
+            analyzed = [
+                (art, kind, build_keyword_only_ai_result(art, target, kind))
+                for art, kind in pairs
+            ]
+            if analyzed:
+                print(f"  [SCAN] Lưu {len(analyzed)} tin (không AI, không lọc tiêu đề)")
+            batch_errors = []
 
         for art, news_kind, ai_result in analyzed:
             url = str(art.get("url") or "").strip()
             history_key = _history_key(target.name, url)
+            notes = ai_result.get("Sanitize_Notes")
+            if notes:
+                print(f"  [AI] {target.name} sanitize={notes}")
             print(
                 f"  [AI] {target.name} matched={ai_result.get('Matched_Target')} "
-                f"activity={ai_result.get('Is_Activity')} change={ai_result.get('Is_Change')}"
+                f"activity={ai_result.get('Is_Activity')} change={ai_result.get('Is_Change')} "
+                f"kind={news_kind} verify_target={verify_target}"
             )
 
-            if not ai_result.get("Matched_Target") or not ai_result.get("Is_Activity"):
-                history_set.add(history_key)
+            if not _article_passes_ai_filters(ai_result, verify_target=verify_target):
                 scan_results.append({"url": url, "skipped": True, "ai_result": ai_result})
                 continue
 
@@ -705,14 +1391,20 @@ def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[st
                 "ai_result": ai_result,
             }
 
+            _remove_notification_by_key(notifs, history_key)
             notifs["channel_hoatdong"].append(dict(record))
-            if ai_result.get("Is_Change"):
+            if (
+                scan_role_change
+                and use_gemini
+                and is_confirmed_role_change(ai_result)
+            ):
                 notifs["channel_biendong"].append(dict(record))
 
             scan_results.append(record)
             saved_count += 1
             new_records.append(record)
             history_set.add(history_key)
+            saved_keys.add(history_key)
 
     save_notifications(notifs)
     save_history(list(history_set))
@@ -743,6 +1435,12 @@ def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[st
     if ai_errors:
         print(f"  [AI] tổng {len(ai_errors)} lỗi trong lượt quét này")
 
+    print(
+        f"[SCAN] Hoàn tất — {len(targets)} đối tượng, +{saved_count} tin mới, "
+        f"{len(history_set)} URL trong history"
+    )
+    sys.stdout.flush()
+
     return {
         "success": True,
         "processed_new": saved_count,
@@ -750,7 +1448,14 @@ def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[st
         "history_size": len(history_set),
         "skipped_history_dup": skipped_history_dup,
         "skipped_pre_decode": skipped_pre_decode,
-        "scan_use_rss": perf["use_rss"],
+        "skipped_whitelist": skipped_whitelist_total,
+        "scan_use_rss": use_rss_scan,
+        "scan_filter_chinh_thong": filter_press,
+        "scan_use_ai": use_gemini,
+        "scan_ai_verify_target": verify_target,
+        "scan_role_change": scan_role_change,
+        "scan_ai_mode": ai_mode,
+        "scan_ai_mode_label": ai_opts["label"],
         "timestamp": now_iso,
         "scanned_target": filter_name or None,
         "scanned_targets": [t.name for t in targets],
@@ -768,27 +1473,6 @@ def process_once(*, scan_hours: Optional[float] = None, target_name: Optional[st
     }
 
 
-def _parse_ts(value: Any) -> Optional[datetime]:
-    if not value:
-        return None
-    s = str(value).strip()
-    for fmt in (
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M",
-    ):
-        try:
-            return datetime.strptime(s[:19], fmt)
-        except Exception:
-            pass
-    try:
-        from email.utils import parsedate_to_datetime
-
-        return parsedate_to_datetime(s)
-    except Exception:
-        return None
-
-
 def _rows_in_window(
     rows: List[Dict[str, Any]], target_name: str, cutoff: datetime
 ) -> List[Dict[str, Any]]:
@@ -799,7 +1483,7 @@ def _rows_in_window(
             continue
         if str(row.get("target_name", "")).strip() != name:
             continue
-        ts = _parse_ts(row.get("timestamp"))
+        ts = parse_ts(row.get("timestamp"))
         if ts is None:
             continue
         if ts >= cutoff:
@@ -939,7 +1623,7 @@ def _summary_card_meta(
         press = str(row.get("press_name") or row.get("press_domain") or "").strip()
         if press and press not in sources:
             sources.append(press)
-        ts = _parse_ts(row.get("timestamp"))
+        ts = parse_ts(row.get("timestamp"))
         if ts is not None and (latest is None or ts > latest):
             latest = ts
 

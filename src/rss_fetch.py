@@ -19,6 +19,7 @@ _DEFAULT_RSS_BY_DOMAIN: Dict[str, str] = {
     "vnexpress.net": "https://vnexpress.net/rss/tin-moi-nhat.rss",
     "tuoitre.vn": "https://tuoitre.vn/rss/tin-moi-nhat.htm",
     "thanhnien.vn": "https://thanhnien.vn/rss/home.rss",
+    "dantri.com.vn": "https://dantri.com.vn/rss/home.rss",
 }
 
 _ROLE_HINT = re.compile(
@@ -84,7 +85,14 @@ def fetch_one_feed(
         return []
 
     try:
-        parsed = feedparser.parse(rss_url)
+        import socket
+
+        prev_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(15)
+        try:
+            parsed = feedparser.parse(rss_url)
+        finally:
+            socket.setdefaulttimeout(prev_timeout)
     except Exception as exc:
         print(f"  [RSS] FAIL {rss_url[:60]}: {exc}")
         return []

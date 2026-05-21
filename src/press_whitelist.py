@@ -47,6 +47,22 @@ class PressWhitelist:
             return cls(data)
         return cls([])
 
+    @staticmethod
+    def _host_matches(dom: str, allowed: str) -> bool:
+        if not dom or not allowed:
+            return False
+        if dom == allowed:
+            return True
+        if dom.endswith("." + allowed):
+            return True
+        dom_base = dom[4:] if dom.startswith("www.") else dom
+        allow_base = allowed[4:] if allowed.startswith("www.") else allowed
+        if dom_base == allow_base:
+            return True
+        if dom_base.endswith("." + allow_base):
+            return True
+        return False
+
     def is_allowed_url(self, url: str) -> bool:
         if not self.domains:
             return False
@@ -56,7 +72,7 @@ class PressWhitelist:
         if dom in self.domains:
             return True
         for allowed in self.domains:
-            if dom == allowed or dom.endswith("." + allowed):
+            if self._host_matches(dom, allowed):
                 return True
         return False
 

@@ -13,10 +13,14 @@ if sys.platform == "win32":
         except Exception:
             pass
 
+import threading
+
 from flask import Flask, Response, jsonify, render_template, request
 
 from src import monitor
 from src.auto_scanner import get_auto_scanner
+from src.data_store import TIME_RANGE_OPTIONS, clear_data, get_data_stats
+from src.common import as_bool
 from src.json_io import read_json, write_json
 from src.telegram_notify import send_test_message
 from src.paths import (
@@ -24,11 +28,8 @@ from src.paths import (
     CONFIG_PATH,
     STATIC_DIR,
     TEMPLATES_DIR,
-    migrate_legacy_files,
     path_str,
 )
-
-migrate_legacy_files()
 
 _AUTO_SCANNER = get_auto_scanner()
 
@@ -58,19 +59,37 @@ def _ensure_telegram(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 def _telegram_settings_payload(tg: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "enabled": _as_bool(tg.get("enabled"), False),
+        "enabled": as_bool(tg.get("enabled"), False),
         "bot_token": str(tg.get("bot_token") or ""),
         "chat_id": str(tg.get("chat_id") or ""),
-        "notify_role_change_only": _as_bool(tg.get("notify_role_change_only"), False),
+        "notify_role_change_only": as_bool(tg.get("notify_role_change_only"), False),
+        "notify_on_empty": as_bool(tg.get("notify_on_empty"), False),
     }
 
 
-def _as_bool(val: Any, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    return str(val).strip().lower() not in ("0", "false", "no", "off", "")
+def _targets_list(cfg: Dict[str, Any]) -> list:
+    targets = cfg.get("targets", [])
+    return targets if isinstance(targets, list) else []
+
+
+def _sanitize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Config công khai — không trả API key / token Telegram."""
+    out = dict(cfg)
+    if out.get("gemini_api_key"):
+        out["gemini_api_key"] = "(đã cấu hình)"
+    tg = out.get("telegram")
+    if isinstance(tg, dict):
+        tg = dict(tg)
+        if tg.get("bot_token"):
+            tg["bot_token"] = "(đã cấu hình)"
+        out["telegram"] = tg
+    gn = out.get("google_news")
+    if isinstance(gn, dict):
+        gn = dict(gn)
+        gn.pop("merge_duplicate_articles", None)
+        gn.pop("use_event_intelligence", None)
+        out["google_news"] = gn
+    return out
 
 
 @app.get("/")
@@ -83,13 +102,22 @@ def target_detail_page():
     return render_template("target_detail.html")
 
 
+@app.get("/api/targets")
+def api_get_targets():
+    cfg = read_json(CONFIG_PATH, default={})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return jsonify({"success": True, "targets": _targets_list(cfg)})
+
+
 @app.get("/config")
 def get_config():
+    """Tương thích — không trả secret; ưu tiên GET /api/targets cho danh sách đối tượng."""
     cfg = read_json(CONFIG_PATH, default={})
     if not isinstance(cfg, dict):
         cfg = {}
     cfg.setdefault("targets", [])
-    return jsonify({"success": True, "config": cfg})
+    return jsonify({"success": True, "config": _sanitize_config(cfg)})
 
 
 def _save_target_in_config(
@@ -162,30 +190,6 @@ def add_target():
     return jsonify({"success": True, "config": cfg, "message": "Đã lưu"})
 
 
-@app.post("/config/targets/update")
-def update_target():
-    """Giữ tương thích — chuyển sang logic lưu chung."""
-    data = request.get_json(force=True) or {}
-    original = str(data.get("name", "")).strip()
-    name = str(data.get("new_name", "") or original).strip()
-    position = str(data.get("position", "")).strip()
-    if not original:
-        return jsonify({"success": False, "error": "Thiếu tên đối tượng gốc"}), 400
-    if not name:
-        return jsonify({"success": False, "error": "Thiếu tên mới"}), 400
-
-    cfg = read_json(CONFIG_PATH, default={})
-    if not isinstance(cfg, dict):
-        cfg = {}
-    cfg, err = _save_target_in_config(
-        cfg, original_name=original, name=name, position=position
-    )
-    if err:
-        return jsonify({"success": False, "error": err}), 404
-    write_json(CONFIG_PATH, cfg)
-    return jsonify({"success": True, "config": cfg, "message": "Đã lưu"})
-
-
 @app.post("/config/targets/delete")
 def delete_target():
     data = request.get_json(force=True) or {}
@@ -206,9 +210,15 @@ def delete_target():
     return jsonify({"success": True, "config": cfg})
 
 
+def _notifications_for_display() -> Dict[str, Any]:
+    cfg = read_json(CONFIG_PATH, default={})
+    notifs = monitor.load_notifications()
+    return monitor.filter_notifications_for_display(notifs, cfg)
+
+
 @app.get("/notifications")
 def get_notifications():
-    notifs = monitor.load_notifications()
+    notifs = _notifications_for_display()
     return jsonify({"success": True, "notifications": notifs})
 
 
@@ -222,7 +232,9 @@ def api_targets_summary():
 
     cfg = read_json(CONFIG_PATH, default={})
     gn = cfg.get("google_news") if isinstance(cfg.get("google_news"), dict) else {}
-    notifs = monitor.load_notifications()
+    notifs = monitor.filter_notifications_for_display(
+        monitor.load_notifications(), cfg
+    )
     names = [
         str(t.get("name", "")).strip()
         for t in (cfg.get("targets") or [])
@@ -251,7 +263,9 @@ def api_target_detail():
 
     cfg = read_json(CONFIG_PATH, default={})
     gn = cfg.get("google_news") if isinstance(cfg.get("google_news"), dict) else {}
-    notifs = monitor.load_notifications()
+    notifs = monitor.filter_notifications_for_display(
+        monitor.load_notifications(), cfg
+    )
     detail = monitor.collect_target_detail(notifs, name, hours, gn=gn)
     return jsonify({"success": True, **detail})
 
@@ -270,7 +284,9 @@ def api_target_export_json():
 
     cfg = read_json(CONFIG_PATH, default={})
     gn = cfg.get("google_news") if isinstance(cfg.get("google_news"), dict) else {}
-    notifs = monitor.load_notifications()
+    notifs = monitor.filter_notifications_for_display(
+        monitor.load_notifications(), cfg
+    )
     detail = monitor.collect_target_detail(notifs, name, hours, gn=gn)
     payload = {
         "exported_at": datetime.now(timezone.utc).isoformat(),
@@ -297,16 +313,28 @@ def api_get_settings():
     press = read_json(CHINH_THONG_PATH, default=[])
     if not isinstance(press, list):
         press = []
+    gn = _ensure_gn(cfg)
+    monitor.ensure_ai_scan_sync(gn, cfg)
+    ai_opts = monitor.resolve_ai_scan_options(cfg)
     return jsonify(
         {
             "success": True,
             "settings": {
                 "filter_chinh_thong_only": monitor.is_chinh_thong_filter_enabled(cfg),
-                "merge_duplicate_articles": _as_bool(gn.get("merge_duplicate_articles"), False),
-                "use_event_intelligence": _as_bool(gn.get("use_event_intelligence"), False),
+                "use_ai": ai_opts["use_gemini"],
+                "ai_verify_target": ai_opts["ai_verify_target"],
+                "scan_role_change": ai_opts["scan_role_change"],
+                "ai_scan_mode": ai_opts["mode"],
+                "ai_scan_mode_label": ai_opts["label"],
+                "ai_scan_mode_hint": ai_opts["hint"],
+                "ai_scan_profiles": [
+                    {"id": k, "label": v["label"], "hint": v["hint"]}
+                    for k, v in monitor.AI_SCAN_PROFILES.items()
+                    if k in monitor.AI_SCAN_UI_MODES
+                ],
                 "max_results_per_target": int(gn.get("max_results_per_target") or 15),
-                "use_rss_feeds": _as_bool(gn.get("use_rss_feeds"), True),
-                "auto_scan_enabled": _as_bool(cfg.get("auto_scan_enabled"), True),
+                "use_rss_feeds": as_bool(gn.get("use_rss_feeds"), True),
+                "auto_scan_enabled": as_bool(cfg.get("auto_scan_enabled"), True),
                 "scan_interval_minutes": max(
                     5, min(1440, int(cfg.get("scan_interval_minutes") or 60))
                 ),
@@ -330,11 +358,54 @@ def api_save_settings():
     tg = _ensure_telegram(cfg)
 
     if "filter_chinh_thong_only" in data:
-        gn["filter_chinh_thong_only"] = _as_bool(data.get("filter_chinh_thong_only"), True)
-    if "merge_duplicate_articles" in data:
-        gn["merge_duplicate_articles"] = _as_bool(data.get("merge_duplicate_articles"), False)
-    if "use_event_intelligence" in data:
-        gn["use_event_intelligence"] = _as_bool(data.get("use_event_intelligence"), False)
+        gn["filter_chinh_thong_only"] = as_bool(data.get("filter_chinh_thong_only"), True)
+    ai_mode_saved = False
+    ai_only_request = False
+    if "ai_scan_mode" in data:
+        mode = str(data.get("ai_scan_mode") or "activity").strip().lower()
+        ai_only_request = set(data.keys()) <= {"ai_scan_mode"}
+        if ai_only_request:
+            ai_opts = monitor.set_and_persist_ai_scan_mode(mode)
+            _AUTO_SCANNER.wake_reconfig(scan_soon=False)
+            rescan = _AUTO_SCANNER.request_rescan_for_mode_change()
+            return jsonify(
+                {
+                    "success": True,
+                    "message": (
+                        "Đã lưu — đang quét lại theo chế độ mới"
+                        if rescan
+                        else "Đã lưu — đang có lượt quét, hãy quét lại sau"
+                    ),
+                    "ai_scan_mode": ai_opts["mode"],
+                    "ai_scan_mode_label": ai_opts["label"],
+                    "rescan_started": rescan,
+                }
+            )
+        monitor.apply_ai_scan_mode(gn, mode)
+        ai_mode_saved = True
+    else:
+        legacy_touch = any(
+            k in data
+            for k in (
+                "use_ai",
+                "use_gemini_analysis",
+                "ai_verify_target",
+                "scan_role_change",
+            )
+        )
+        if legacy_touch:
+            if "use_ai" in data or "use_gemini_analysis" in data:
+                use_g = as_bool(
+                    data.get("use_gemini_analysis", data.get("use_ai")), True
+                )
+                gn["use_gemini_analysis"] = use_g
+                gn["use_ai"] = use_g
+            if "ai_verify_target" in data:
+                gn["ai_verify_target"] = as_bool(data.get("ai_verify_target"), True)
+            if "scan_role_change" in data:
+                gn["scan_role_change"] = as_bool(data.get("scan_role_change"), True)
+    if "ai_scan_mode" not in data:
+        monitor.ensure_ai_scan_sync(gn, cfg)
     if "max_results_per_target" in data:
         try:
             n = int(data.get("max_results_per_target"))
@@ -342,9 +413,9 @@ def api_save_settings():
         except (TypeError, ValueError):
             pass
     if "use_rss_feeds" in data:
-        gn["use_rss_feeds"] = _as_bool(data.get("use_rss_feeds"), True)
+        gn["use_rss_feeds"] = as_bool(data.get("use_rss_feeds"), True)
     if "auto_scan_enabled" in data:
-        cfg["auto_scan_enabled"] = _as_bool(data.get("auto_scan_enabled"), True)
+        cfg["auto_scan_enabled"] = as_bool(data.get("auto_scan_enabled"), True)
     if "scan_interval_minutes" in data:
         try:
             n = int(data.get("scan_interval_minutes"))
@@ -359,13 +430,15 @@ def api_save_settings():
             pass
 
     if "enabled" in data:
-        tg["enabled"] = _as_bool(data.get("enabled"), False)
+        tg["enabled"] = as_bool(data.get("enabled"), False)
     if "bot_token" in data:
         tg["bot_token"] = str(data.get("bot_token") or "").strip()
     if "chat_id" in data:
         tg["chat_id"] = str(data.get("chat_id") or "").strip()
     if "notify_role_change_only" in data:
-        tg["notify_role_change_only"] = _as_bool(data.get("notify_role_change_only"), False)
+        tg["notify_role_change_only"] = as_bool(data.get("notify_role_change_only"), False)
+    if "notify_on_empty" in data:
+        tg["notify_on_empty"] = as_bool(data.get("notify_on_empty"), False)
 
     if "press_sources" in data:
         sources = data.get("press_sources")
@@ -398,14 +471,70 @@ def api_save_settings():
                     if rss.startswith("http"):
                         item["rss_url"] = rss
                     cleaned.append(item)
-            write_json(CHINH_THONG_PATH, cleaned)
+            if cleaned or not existing:
+                write_json(CHINH_THONG_PATH, cleaned)
+            elif monitor.is_chinh_thong_filter_enabled(cfg):
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "Danh sách báo chính thống trống. Thêm ít nhất một báo hoặc tắt «Chỉ báo chính thống».",
+                    }
+                ), 400
 
+    cfg["google_news"] = gn
     write_json(CONFIG_PATH, cfg)
-    _AUTO_SCANNER.wake_reconfig()
+    ai_opts = monitor.resolve_ai_scan_options(cfg)
+    rescan_started = False
+    if ai_mode_saved:
+        _AUTO_SCANNER.wake_reconfig(scan_soon=False)
+        rescan_started = _AUTO_SCANNER.request_rescan_for_mode_change()
+    else:
+        _AUTO_SCANNER.wake_reconfig(scan_soon=False)
+
+    trigger_scan = as_bool(data.get("trigger_scan"), False)
+    scan_started = False
+    if trigger_scan:
+        st = _AUTO_SCANNER.get_status()
+        if st.get("is_scanning"):
+            print(
+                "[SETTINGS] Yêu cầu quét sau lưu — xếp hàng sau lượt quét hiện tại",
+                flush=True,
+            )
+        else:
+            print(
+                f"[SETTINGS] Quét ngay sau lưu — chế độ {ai_opts['label']}",
+                flush=True,
+            )
+
+        def _scan_after_save() -> None:
+            try:
+                _AUTO_SCANNER.run_scan(
+                    scan_hours=None,
+                    source="settings",
+                    blocking=True,
+                    ignore_history=True,
+                )
+            except Exception as exc:
+                print(f"[SETTINGS] Quét sau lưu lỗi: {exc}", flush=True)
+
+        threading.Thread(
+            target=_scan_after_save, name="settings-scan", daemon=True
+        ).start()
+        scan_started = True
+
+    msg = "Đã lưu cài đặt"
+    if rescan_started:
+        msg = "Đã lưu — đang quét lại theo chế độ mới"
+    elif scan_started:
+        msg = "Đã lưu — đang quét…"
     return jsonify(
         {
             "success": True,
-            "message": "Đã lưu cài đặt — chu kỳ quét sẽ áp dụng ngay",
+            "message": msg,
+            "ai_scan_mode": ai_opts["mode"],
+            "ai_scan_mode_label": ai_opts["label"],
+            "scan_started": scan_started,
+            "rescan_started": rescan_started,
             "config": cfg,
         }
     )
@@ -428,6 +557,63 @@ def api_telegram_test():
     return jsonify({"success": True, "message": "Đã gửi tin nhắn thử"})
 
 
+@app.get("/api/data/stats")
+def api_data_stats():
+    time_range = str(request.args.get("time_range") or "all").strip().lower()
+    target_name = str(request.args.get("target_name") or "").strip() or None
+    try:
+        return jsonify(
+            {
+                "success": True,
+                "stats": get_data_stats(
+                    time_range=time_range, target_name=target_name
+                ),
+                "time_range_options": [
+                    {"id": k, "label": v.get("label", k)}
+                    for k, v in TIME_RANGE_OPTIONS.items()
+                ],
+            }
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.post("/api/data/clear")
+def api_data_clear():
+    st = _AUTO_SCANNER.get_status()
+    if st.get("is_scanning"):
+        return jsonify(
+            {"success": False, "error": "Đang quét — hãy đợi xong rồi mới xóa dữ liệu"}
+        ), 409
+
+    body = request.get_json(silent=True) or {}
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        return jsonify({"success": False, "error": "Thiếu danh sách items cần xóa"}), 400
+
+    target_name = str(body.get("target_name") or "").strip() or None
+    confirm = str(body.get("confirm") or "").strip().upper()
+    if confirm != "XOA":
+        return jsonify(
+            {
+                "success": False,
+                "error": 'Gửi confirm: "XOA" để xác nhận xóa',
+            }
+        ), 400
+
+    time_range = str(body.get("time_range") or "all").strip().lower()
+
+    try:
+        out = clear_data(
+            items, target_name=target_name, time_range=time_range
+        )
+        return jsonify({"success": True, **out})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.get("/api/monitor/status")
 def api_monitor_status():
     _AUTO_SCANNER.ensure_running()
@@ -437,7 +623,9 @@ def api_monitor_status():
 
 @app.post("/monitor/run")
 def monitor_run():
+    """Bắt đầu quét trên thread riêng — không chặn Flask (tránh UI/API «đơ»)."""
     try:
+        _AUTO_SCANNER.ensure_running()
         body = request.get_json(silent=True) or {}
         hours = None
         if body.get("scan_hours") is not None:
@@ -446,10 +634,54 @@ def monitor_run():
             except (TypeError, ValueError):
                 hours = None
         target_name = str(body.get("target_name") or "").strip() or None
-        out = _AUTO_SCANNER.run_scan(
-            scan_hours=hours, source="manual", target_name=target_name
+        ignore_history = True
+        if body.get("ignore_history") is not None:
+            ignore_history = as_bool(body.get("ignore_history"), True)
+        st = _AUTO_SCANNER.get_status()
+        if st.get("is_scanning"):
+            who = target_name or "tất cả đối tượng"
+            print(
+                f"[MANUAL] Từ chối quét ({who}) — đang có lượt quét khác",
+                flush=True,
+            )
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Đang quét — vui lòng đợi lượt hiện tại xong",
+                    "is_scanning": True,
+                }
+            ), 409
+
+        who = target_name or "tất cả đối tượng"
+        print(f"[MANUAL] Yêu cầu quét ({who}) — bắt đầu…", flush=True)
+
+        def _manual_scan() -> None:
+            try:
+                out = _AUTO_SCANNER.run_scan(
+                    scan_hours=hours,
+                    source="manual",
+                    target_name=target_name,
+                    ignore_history=ignore_history,
+                )
+                if out is None and _AUTO_SCANNER.get_status().get("is_scanning"):
+                    print(
+                        "[MANUAL] Không chạy được — vẫn đang có lượt quét khác",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(f"[MANUAL] Quét lỗi: {exc}", flush=True)
+
+        threading.Thread(
+            target=_manual_scan, name="manual-scan", daemon=True
+        ).start()
+        return jsonify(
+            {
+                "success": True,
+                "started": True,
+                "queued": False,
+                "message": "Đã bắt đầu quét — theo dõi trên giao diện hoặc log terminal",
+            }
         )
-        return jsonify({"success": True, **out})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

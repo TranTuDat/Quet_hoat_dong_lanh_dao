@@ -34,6 +34,34 @@ def ensure_project_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _chinh_thong_is_empty(path: Path) -> bool:
+    if not path.is_file():
+        return True
+    try:
+        import json
+
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return not (isinstance(data, list) and len(data) > 0)
+    except Exception:
+        return True
+
+
+def migrate_chinh_thong_if_empty() -> None:
+    """Khôi phục danh sách báo nếu config/Chinh_thong.json trống."""
+    ensure_project_dirs()
+    if not _chinh_thong_is_empty(CHINH_THONG_PATH):
+        return
+    for src in (
+        ROOT / "Phan_mem" / "config" / "Chinh_thong.json",
+        ROOT / "Chinh_thong.json",
+    ):
+        if _chinh_thong_is_empty(src):
+            continue
+        shutil.copy2(src, CHINH_THONG_PATH)
+        return
+
+
 def migrate_legacy_files() -> None:
     """Chuyển file JSON cũ ở thư mục gốc sang config/ và data/ (một lần)."""
     ensure_project_dirs()
@@ -41,6 +69,7 @@ def migrate_legacy_files() -> None:
         if new_path.exists() or not legacy_path.exists():
             continue
         shutil.copy2(legacy_path, new_path)
+    migrate_chinh_thong_if_empty()
 
 
 def path_str(path: Path) -> str:

@@ -6,7 +6,7 @@
   <title>Giám sát tin tức</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/isr-theme.css?v=5" />
+  <link rel="stylesheet" href="/static/css/isr-theme.css?v=12" />
   <script>
     (function () {
       try {
@@ -19,7 +19,7 @@
   <script src="/static/js/theme.js?v=2"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
 </head>
-<body>
+<body class="page-dashboard">
   <div class="shell">
     <aside class="sidebar">
       <div class="sidebar-brand">
@@ -48,47 +48,82 @@
         </button>
       </div>
 
-      <div class="sidebar-section">
-        <div class="sec-label"><i data-lucide="clock"></i> Thời gian tìm kiếm</div>
-        <div class="time-row">
-          <input class="inp-glass" type="text" id="hoursRangeInput" inputmode="decimal" value="24" aria-label="Giờ" />
-          <span class="unit-tag">GIỜ</span>
-          <button type="button" class="btn btn-glass btn-icon" id="btnApplyHours" title="Áp dụng">
-            <i data-lucide="check"></i><span class="unit-tag">Áp dụng</span>
-          </button>
-        </div>
-      </div>
-
       <div class="sidebar-scroll">
-        <div class="sec-label" style="margin-bottom:10px"><i data-lucide="users"></i> Đối tượng</div>
-        <div class="target-form-hint" id="editHint">
-          <i data-lucide="pencil"></i>
-          <span id="editHintText">Đang sửa…</span>
-        </div>
-        <div class="add-row">
-          <input class="inp-text" type="text" id="targetName" placeholder="Họ tên" aria-label="Họ tên" />
-          <input class="inp-text" type="text" id="targetPos" placeholder="Chức vụ" aria-label="Chức vụ" />
-          <div class="target-form-actions" id="targetFormActions">
-            <button type="button" class="btn btn-glass" id="btnAddTarget" style="grid-column:1/-1">
-              <i data-lucide="plus" id="btnTargetIcon"></i>
-              <span id="btnTargetLabel">Thêm</span>
-            </button>
-            <button type="button" class="btn btn-glass" id="btnCancelEdit" style="display:none">
-              <i data-lucide="x"></i> Hủy
-            </button>
+        <div class="sidebar-scroll-head">
+          <div class="sec-label sec-label-row">
+            <span><i data-lucide="users"></i> Đối tượng</span>
+            <span class="search-hint" id="targetSearchHint" hidden></span>
+          </div>
+          <div class="sidebar-search" role="search">
+            <label class="sidebar-search-field" for="targetSearchInput">
+              <i data-lucide="search" aria-hidden="true"></i>
+              <input
+                class="inp-text sidebar-search-inp"
+                type="search"
+                id="targetSearchInput"
+                placeholder="Tìm tên hoặc chức vụ…"
+                autocomplete="off"
+                enterkeyhint="search"
+              />
+              <button
+                type="button"
+                class="btn btn-glass btn-icon sidebar-search-clear"
+                id="targetSearchClear"
+                title="Xóa tìm kiếm"
+                hidden
+              >
+                <i data-lucide="x"></i>
+              </button>
+            </label>
+          </div>
+          <div class="target-form-hint" id="editHint">
+            <i data-lucide="pencil"></i>
+            <span id="editHintText">Đang sửa…</span>
+          </div>
+          <div class="add-row">
+            <input class="inp-text" type="text" id="targetName" placeholder="Họ tên" aria-label="Họ tên" />
+            <input class="inp-text" type="text" id="targetPos" placeholder="Chức vụ" aria-label="Chức vụ" />
+            <div class="target-form-actions" id="targetFormActions">
+              <button type="button" class="btn btn-glass" id="btnAddTarget" style="grid-column:1/-1">
+                <i data-lucide="plus" id="btnTargetIcon"></i>
+                <span id="btnTargetLabel">Thêm</span>
+              </button>
+              <button type="button" class="btn btn-glass" id="btnCancelEdit" style="display:none">
+                <i data-lucide="x"></i> Hủy
+              </button>
+            </div>
           </div>
         </div>
-        <div class="targets" id="targetsList"></div>
+        <div class="sidebar-scroll-body">
+          <div class="targets" id="targetsList"></div>
+          <p class="search-filter-empty" id="targetsFilterEmpty" hidden>Không có đối tượng khớp tìm kiếm.</p>
+        </div>
       </div>
     </aside>
 
     <main class="main">
       <header class="main-top">
-        <div>
+        <div class="main-top-lead">
           <h2>Kết quả lần quét gần nhất</h2>
+          <p class="main-top-meta" id="targetScopeMeta">—</p>
         </div>
         <div class="main-actions">
-          <span class="status-pill" id="statusLine">—</span>
+          <div class="main-hours-bar" role="group" aria-label="Thời gian tìm kiếm">
+            <span class="main-hours-label"><i data-lucide="clock"></i> Thời gian</span>
+            <input
+              class="inp-glass main-hours-inp"
+              type="text"
+              id="hoursRangeInput"
+              inputmode="decimal"
+              value="24"
+              aria-label="Số giờ hiển thị tin"
+            />
+            <span class="unit-tag">giờ</span>
+            <button type="button" class="btn btn-glass btn-icon" id="btnApplyHours" title="Áp dụng cửa sổ thời gian">
+              <i data-lucide="check"></i>
+            </button>
+          </div>
+          <span class="status-pill" id="statusLine">Sẵn sàng</span>
           <button type="button" class="btn btn-glass btn-icon" id="btnRefresh" title="Tải lại">
             <i data-lucide="refresh-cw"></i>
           </button>
@@ -101,7 +136,12 @@
       <div class="main-content">
         <div class="main-dashboard-grid">
           <div class="dashboard-primary">
-            <div class="feed" id="summariesList"></div>
+            <div class="results-scroll" id="resultsScroll">
+              <div class="feed" id="summariesList"></div>
+              <p class="search-filter-empty search-filter-empty-main" id="summariesFilterEmpty" hidden>
+                Không có kết quả quét khớp tìm kiếm.
+              </p>
+            </div>
           </div>
           <aside class="dashboard-aside" aria-label="Bảng tin và trạng thái">
             <section class="side-panel">
@@ -128,34 +168,27 @@
       </div>
       <div class="modal-bd">
         <div class="settings-group">
-          <h3>Lọc khi quét</h3>
+          <h3><i data-lucide="sparkles"></i> Phân tích &amp; lọc</h3>
+          <div class="setting-row setting-row-stack ai-mode-block">
+            <div class="lbl">
+              <strong>Chế độ AI khi quét</strong>
+              <span id="setAiScanModeHint">Chọn một chế độ — lưu ngay; quét thủ công và quét tự động đều dùng chế độ này.</span>
+            </div>
+            <input type="hidden" id="setAiScanMode" value="activity" />
+            <div
+              class="ai-mode-picker"
+              id="setAiScanModePicker"
+              role="radiogroup"
+              aria-label="Chế độ AI khi quét"
+            ></div>
+          </div>
           <label class="setting-row">
             <div class="lbl">
               <strong>Chỉ báo chính thống</strong>
-              <span>Chỉ giữ tin từ danh sách báo bên dưới (file Chinh_thong.json)</span>
+              <span>Bật: chỉ hiển thị và quét tin từ danh sách bên dưới. Tắt: hiển thị mọi báo đã lưu; quét Google News không giới hạn danh sách.</span>
             </div>
             <label class="toggle">
               <input type="checkbox" id="setFilterChinhThong" />
-              <span class="track"></span>
-            </label>
-          </label>
-          <label class="setting-row">
-            <div class="lbl">
-              <strong>Gộp tin trùng</strong>
-              <span>Nhóm các bài cùng sự kiện (cần bật module phân cụm)</span>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" id="setMergeDup" />
-              <span class="track"></span>
-            </label>
-          </label>
-          <label class="setting-row">
-            <div class="lbl">
-              <strong>Phân cụm sự kiện (AI)</strong>
-              <span>Tải model nặng, quét chậm hơn</span>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" id="setEventIntel" />
               <span class="track"></span>
             </label>
           </label>
@@ -178,7 +211,7 @@
           </label>
         </div>
         <div class="settings-group">
-          <h3>Quét tự động (real-time)</h3>
+          <h3><i data-lucide="refresh-cw"></i> Quét tự động (real-time)</h3>
           <label class="setting-row">
             <div class="lbl">
               <strong>Bật quét nền</strong>
@@ -205,7 +238,7 @@
           </label>
         </div>
         <div class="settings-group">
-          <h3>Thông báo Telegram</h3>
+          <h3><i data-lucide="send"></i> Thông báo Telegram</h3>
           <label class="setting-row">
             <div class="lbl">
               <strong>Bật gửi Telegram</strong>
@@ -226,6 +259,16 @@
               <span class="track"></span>
             </label>
           </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Gửi tin «không có hoạt động»</strong>
+              <span>Tắt (khuyên dùng): tránh spam và tránh 2 tin cùng đối tượng (trống rồi có bài). Chỉ gửi khi có tin mới.</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="setTelegramNotifyEmpty" />
+              <span class="track"></span>
+            </label>
+          </label>
           <div class="press-add" style="grid-template-columns:1fr">
             <input class="inp-text" type="password" id="setTelegramToken" placeholder="Bot token (từ @BotFather)" autocomplete="off" />
             <input class="inp-text" type="text" id="setTelegramChatId" placeholder="Chat ID người/nhóm nhận (không phải ID bot)" />
@@ -235,13 +278,95 @@
           </div>
         </div>
         <div class="settings-group">
-          <h3>Danh sách báo chính thống</h3>
+          <h3><i data-lucide="newspaper"></i> Danh sách báo chính thống</h3>
           <div class="press-list" id="pressList"></div>
           <div class="press-add">
             <input class="inp-text" type="text" id="pressName" placeholder="Tên báo" />
             <input class="inp-text" type="text" id="pressUrl" placeholder="https://vnexpress.net/" />
             <button type="button" class="btn btn-glass btn-sm" id="btnAddPress">
               <i data-lucide="plus"></i> Thêm báo
+            </button>
+          </div>
+        </div>
+        <div class="settings-group">
+          <h3><i data-lucide="database"></i> Quản lý dữ liệu</h3>
+          <div class="setting-row setting-row-info">
+            <div class="lbl">
+              <strong>Tổng quan</strong>
+              <span id="dataStatsLine">Đang tải thống kê…</span>
+            </div>
+          </div>
+          <div class="setting-row setting-row-stack">
+            <div class="lbl">
+              <strong>Thời gian</strong>
+              <span>Chỉ xóa dữ liệu trong khoảng đã chọn (giống xóa lịch sử duyệt web)</span>
+            </div>
+            <div class="data-time-range" role="radiogroup" aria-label="Khoảng thời gian xóa">
+              <label class="data-time-opt">
+                <input type="radio" name="clrTimeRange" value="1h" />
+                <span>1 giờ qua</span>
+              </label>
+              <label class="data-time-opt">
+                <input type="radio" name="clrTimeRange" value="24h" />
+                <span>24 giờ qua</span>
+              </label>
+              <label class="data-time-opt">
+                <input type="radio" name="clrTimeRange" value="7d" />
+                <span>7 ngày qua</span>
+              </label>
+              <label class="data-time-opt">
+                <input type="radio" name="clrTimeRange" value="4w" />
+                <span>4 tuần qua</span>
+              </label>
+              <label class="data-time-opt">
+                <input type="radio" name="clrTimeRange" value="all" checked />
+                <span>Toàn bộ</span>
+              </label>
+            </div>
+          </div>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Tin đã lưu</strong>
+              <span id="clrNotificationsMeta">notifications.json</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="clrNotifications" checked />
+              <span class="track"></span>
+            </label>
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>URL đã quét (history)</strong>
+              <span id="clrHistoryMeta">history.json — xóa để quét lại URL cũ</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="clrHistory" checked />
+              <span class="track"></span>
+            </label>
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Đã gửi Telegram</strong>
+              <span id="clrTelegramSentMeta">telegram_sent.json — xóa để gửi lại tin</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="clrTelegramSent" />
+              <span class="track"></span>
+            </label>
+          </label>
+          <label class="setting-row">
+            <div class="lbl">
+              <strong>Cache decode link</strong>
+              <span id="clrDecodeCacheMeta">url_decode_cache.json</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="clrDecodeCache" />
+              <span class="track"></span>
+            </label>
+          </label>
+          <div class="settings-action-row">
+            <button type="button" class="btn btn-danger btn-sm" id="btnClearData">
+              <i data-lucide="trash-2"></i> Xóa dữ liệu đã chọn
             </button>
           </div>
         </div>
@@ -255,7 +380,7 @@
     </div>
   </div>
 
-  <script src="/static/js/dashboard.js?v=15"></script>
-  <script src="/static/js/settings.js?v=3"></script>
+  <script src="/static/js/dashboard.js?v=31"></script>
+  <script src="/static/js/settings.js?v=18"></script>
 </body>
 </html>

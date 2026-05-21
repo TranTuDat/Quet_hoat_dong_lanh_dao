@@ -184,31 +184,72 @@
       }
     }
 
+    async function fetchScanBusy(){
+      try{
+        const res = await fetch('/api/monitor/status');
+        const data = await res.json();
+        return !!(data.status && data.status.is_scanning);
+      }catch{ return false; }
+    }
+
+    function applyDetailScanLock(busy){
+      const btn = document.getElementById('btnScanTarget');
+      if(!btn) return;
+      btn.disabled = !!busy;
+      btn.title = busy ? 'Đang có lượt quét — vui lòng đợi' : 'Quét riêng đối tượng này (không quét các đối tượng khác)';
+    }
+
+    async function pollDetailScanStatus(){
+      applyDetailScanLock(await fetchScanBusy());
+    }
+
+    async function waitDetailScanComplete(){
+      for(let i = 0; i < 480; i++){
+        const res = await fetch('/api/monitor/status');
+        const data = await res.json();
+        const st = data.status || {};
+        if(!st.is_scanning) return st;
+        await new Promise(r => setTimeout(r, 1500));
+      }
+      throw new Error('Quét quá lâu — xem log trong cửa sổ python He_thong.py');
+    }
+
     async function scanCurrentTarget(){
       const name = (window.__DETAIL_TARGET__ || '').trim();
       const hours = window.__DETAIL_HOURS__ || 24;
       const btn = document.getElementById('btnScanTarget');
       const scanSpin = document.getElementById('scanSpin');
       if(!name || !btn || btn.disabled) return;
+      if(await fetchScanBusy()){
+        alert('Đang có lượt quét — vui lòng đợi xong rồi thử lại');
+        return;
+      }
+      applyDetailScanLock(true);
       btn.disabled = true;
       if(scanSpin) scanSpin.style.display = 'inline-block';
       try{
         const res = await fetch('/monitor/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scan_hours: hours, target_name: name }),
+          body: JSON.stringify({
+            scan_hours: hours,
+            target_name: name,
+            ignore_history: true,
+          }),
         });
         const data = await res.json();
         if(!res.ok || data.success === false){
           throw new Error(data.error || ('Lỗi ' + res.status));
         }
+        const st = await waitDetailScanComplete();
         await load();
-        alert('Đã thêm ' + (data.processed_new || 0) + ' tin mới cho ' + name);
+        const n = Number(st?.last_processed_new ?? 0);
+        alert('Đã quét xong · ' + name + ' — +' + n + ' tin mới');
       }catch(e){
         alert(String(e?.message || e));
       }finally{
-        btn.disabled = false;
         if(scanSpin) scanSpin.style.display = 'none';
+        await pollDetailScanStatus();
       }
     }
 
@@ -216,6 +257,8 @@
       if (window.lucide) lucide.createIcons();
       document.getElementById('btnScanTarget')?.addEventListener('click', scanCurrentTarget);
       load();
+      pollDetailScanStatus();
+      setInterval(pollDetailScanStatus, 15000);
     });
   </script>
 </body>
